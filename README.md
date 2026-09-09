@@ -8,3 +8,5 @@ Validation rerun after the Kubernetes service-account defaulting fix.
 Validation rerun after the MCP polling and publication recovery fixes.
 
 Validation rerun after the validation container termination-path fix.
+
+Validation rerun after distinguishing the reviewer and validation checkout directories.
