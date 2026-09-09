@@ -6,4 +6,8 @@ function subtract(a, b) {
   return a - b;
 }
 
-module.exports = { add, subtract };
+function square(n) {
+  return n * n;
+}
+
+module.exports = { add, subtract, square };
