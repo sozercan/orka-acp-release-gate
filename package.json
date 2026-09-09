@@ -3,6 +3,6 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "test": "node --test arithmetic.test.js"
+    "test": "node slow-test.js"
   }
 }

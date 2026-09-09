@@ -1,3 +1,3 @@
 # Workflow validation fixture
 
-A small JavaScript arithmetic package. Run `npm test` to validate changes. Dependencies are built into Node; no install step is needed.
+Run `npm test`. The check intentionally takes 95 seconds to verify asynchronous validation. It uses Node built-in modules and needs no install step or network access. Wait for its exit status before reporting whether validation passed.
