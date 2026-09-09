@@ -1,3 +1,4 @@
-# Arithmetic example validation
+# Orka example validation fixture
 
-Run `python3 -m unittest -v` to validate the arithmetic helpers.
+A small arithmetic module for live workflow validation. Run `node --test`.
+No third-party packages or network access are required for the tests.
