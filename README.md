@@ -1,3 +1,3 @@
-# Workflow validation fixture
+# Negative validation fixture
 
-A small JavaScript arithmetic package. Run `npm test` to validate changes. Dependencies are built into Node; no install step is needed.
+Run `npm test`. The offline check intentionally waits 95 seconds and then exits nonzero. It needs no dependencies, installation, network access, or filesystem writes.
