@@ -1,3 +1,3 @@
-# Workflow validation fixture
+# Negative validation fixture
 
-A small JavaScript arithmetic package. Run `npm test` to validate changes. Dependencies are built into Node; no install step is needed.
+Run `npm test`. The offline check waits 60 minutes so Orka's real 45-minute validation deadline must stop it. It needs no dependencies, installation, network access, or filesystem writes.
