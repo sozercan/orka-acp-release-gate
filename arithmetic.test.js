@@ -1,5 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { add, subtract } = require('./arithmetic');
+const { add, subtract, multiply } = require('./arithmetic');
 test('addition', () => assert.equal(add(2, 3), 5));
 test('subtraction', () => assert.equal(subtract(5, 2), 3));
+test('multiply positive integers', () => assert.equal(multiply(4, 5), 20));
+test('multiply negative numbers', () => assert.equal(multiply(-3, 4), -12));
+test('multiply two negative numbers', () => assert.equal(multiply(-2, -5), 10));
+test('multiply fractional numbers', () => assert.equal(multiply(2.5, 4), 10));
+test('multiply zero', () => assert.equal(multiply(5, 0), 0));
+test('multiply by zero', () => assert.equal(multiply(0, 7), 0));
+test('multiply two zeros', () => assert.equal(multiply(0, 0), 0));
