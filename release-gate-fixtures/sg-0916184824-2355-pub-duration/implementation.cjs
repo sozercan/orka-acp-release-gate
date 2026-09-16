@@ -1,7 +1,7 @@
 'use strict';
 
 const MULTIPLIERS = Object.freeze({
-  ms: 10n,
+  ms: 1n,
   s: 1000n,
   m: 60000n,
   h: 3600000n,
