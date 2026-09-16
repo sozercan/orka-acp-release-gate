@@ -1,7 +1,7 @@
 'use strict';
 
 const MULTIPLIERS = Object.freeze({
-  ms: 10n,
+  ms: 1n,
   s: 1000n,
   m: 60000n,
   h: 3600000n,
@@ -22,6 +22,7 @@ function parseDuration(input) {
   if (milliseconds > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new RangeError('Duration exceeds the safe integer range');
   }
+  return Number(milliseconds);
   return Number(milliseconds);
 }
 
