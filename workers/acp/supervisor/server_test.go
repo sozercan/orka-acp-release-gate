@@ -1832,8 +1832,8 @@ func TestSupervisorRetiresPoisonedSessionWithoutPoolDrain(t *testing.T) {
 	t.Fatal("poisoned RuntimeSession remained resident without an enclosing pool drain")
 }
 
-func TestSupervisorDrainSchedulesPublicationPreparedSessionBeforeSettlement(t *testing.T) {
-	server, cfg, _ := newTestServer(t, "immediate")
+func TestBeginDrainSchedulesPublicationPreparedSessionBeforeSettlement(t *testing.T) {
+	server, _, _ := newTestServer(t, "immediate")
 	now := time.Now().UTC()
 	sessionID := harnessv2.RuntimeSessionID("publication-session")
 	state := &sessionState{
@@ -1845,20 +1845,14 @@ func TestSupervisorDrainSchedulesPublicationPreparedSessionBeforeSettlement(t *t
 		prompt: &promptState{},
 	}
 	server.mu.Lock()
-	server.sessions[sessionID] = state
-	server.mu.Unlock()
-
-	drain := harnessv2.DrainRequest{Protocol: harnessv2.ProtocolVersion, Metadata: harnessv2.MutationMetadata{
-		Fence: cfg.Fence, OperationID: "drain-publication-prepared", RequestDigestSchemaVersion: harnessv2.RequestDigestSchemaVersion,
-		ExpiresAt: now.Add(time.Minute),
-	}, Reason: "rollout"}
-	sealRequest(t, &drain.Metadata.RequestDigest, drain)
-	response := performMutation(t, server.Handler(), http.MethodPut, harnessv2.DrainPath, drain, cfg)
-	if response.Code != http.StatusOK {
-		t.Fatalf("drain status=%d body=%s", response.Code, response.Body.String())
-	}
-	server.mu.Lock()
 	defer server.mu.Unlock()
+	server.sessions[sessionID] = state
+	// Inspect the scheduling decision before starting asynchronous cleanup,
+	// which may defer an unsettled prompt and clear the scheduling flag.
+	cleanup := server.beginDrainLocked("rollout", now)
+	if len(cleanup) != 1 || cleanup[0].id != sessionID || cleanup[0].state != state {
+		t.Fatal("publication-prepared RuntimeSession was not selected for drain cleanup")
+	}
 	if server.sessions[sessionID] != state || !state.drainCleanupScheduled {
 		t.Fatalf("publication-prepared RuntimeSession was not scheduled before settlement: resident=%t scheduled=%t", server.sessions[sessionID] == state, state.drainCleanupScheduled)
 	}
