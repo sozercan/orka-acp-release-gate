@@ -7,7 +7,7 @@ out_of_range() { printf '%s\n' 'duration out of range' >&2; exit 3; }
 
 [ "$#" -eq 1 ] || invalid
 case "$1" in
-    *ms) amount=${1%ms}; multiplier=10 ;;
+    *ms) amount=${1%ms}; multiplier=1 ;;
     *s) amount=${1%s}; multiplier=1000 ;;
     *m) amount=${1%m}; multiplier=60000 ;;
     *h) amount=${1%h}; multiplier=3600000 ;;
