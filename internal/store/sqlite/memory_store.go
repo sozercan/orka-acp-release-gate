@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
+	"math"
 	"strings"
 	"time"
 	"unicode"
@@ -162,15 +162,17 @@ func (s *Store) UpdateMemoryIfCurrent(ctx context.Context, memory store.Memory) 
 		if err != nil {
 			return nil, err
 		}
-		updated, err := scanMemory(s.taskDataExecutor(ctx).QueryRowContext(ctx,
-			updateMemorySQL+` AND generation = ? RETURNING `+memoryColumns, append(args, strconv.FormatUint(memory.Generation, 10))...))
-		if errors.Is(err, sql.ErrNoRows) {
-			if _, err := s.GetMemory(ctx, memory.Namespace, memory.ID); err != nil {
-				return nil, err
+		if memory.Generation <= math.MaxInt64 {
+			updated, err := scanMemory(s.taskDataExecutor(ctx).QueryRowContext(ctx,
+				updateMemorySQL+` AND generation = ? RETURNING `+memoryColumns, append(args, int64(memory.Generation))...))
+			if !errors.Is(err, sql.ErrNoRows) {
+				return updated, uniqueConflict(err)
 			}
-			return nil, store.PreconditionFailedErrorf("memory %q changed since it was read", memory.ID)
 		}
-		return updated, uniqueConflict(err)
+		if _, err := s.GetMemory(ctx, memory.Namespace, memory.ID); err != nil {
+			return nil, err
+		}
+		return nil, store.PreconditionFailedErrorf("memory %q changed since it was read", memory.ID)
 	})
 }
 

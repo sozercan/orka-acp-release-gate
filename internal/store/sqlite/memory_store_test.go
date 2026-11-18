@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,10 +15,30 @@ import (
 	"github.com/orka-agents/orka/internal/storageclient"
 	"github.com/orka-agents/orka/internal/storageclient/storageclienttest"
 	"github.com/orka-agents/orka/internal/store"
+	"github.com/stretchr/testify/require"
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const memoryTestTaskA = "task-a"
+
+func TestConditionalMemoryEditAtSQLiteIntegerLimit(t *testing.T) {
+	backend := setupTestStore(t)
+	ctx := t.Context()
+	memory := store.Memory{Namespace: "ns-mem", Content: "unchanged"}
+	require.NoError(t, backend.CreateMemory(ctx, &memory))
+	_, err := backend.db.ExecContext(ctx, `UPDATE memories SET generation = ? WHERE namespace = ? AND id = ?`, int64(math.MaxInt64), memory.Namespace, memory.ID)
+	require.NoError(t, err)
+
+	for _, generation := range []uint64{math.MaxInt64 - 1, math.MaxInt64 + 1} {
+		memory.Generation = generation
+		_, err := backend.UpdateMemoryIfCurrent(ctx, memory)
+		require.ErrorIs(t, err, store.ErrPreconditionFailed, "generation %d", generation)
+	}
+	memory.Generation = math.MaxInt64
+	updated, err := backend.UpdateMemoryIfCurrent(ctx, memory)
+	require.NoError(t, err)
+	require.Equal(t, memory.Generation, updated.Generation)
+}
 
 func TestMemoryStore(t *testing.T) {
 	s := setupTestStore(t)
