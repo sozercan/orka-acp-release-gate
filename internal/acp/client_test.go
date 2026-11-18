@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -248,6 +251,168 @@ func TestClientContextCancellationSendsCancelRequest(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("cancel request was not sent")
+	}
+}
+
+func TestClientPromptFinalFrameAtEOF(t *testing.T) {
+	for _, phase := range []string{"before write ack", "after write ack"} {
+		for _, frame := range []string{"result", "RPC error", "no reply", "wrong ID"} {
+			t.Run(phase+"/"+frame, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					clientConn, adapter := net.Pipe()
+					defer func() { _ = clientConn.Close() }()
+					defer func() { _ = adapter.Close() }()
+					release := make(chan struct{})
+					unblock := sync.OnceFunc(func() { close(release) })
+					defer unblock()
+					var writer io.Writer = clientConn
+					beforeAck := phase == "before write ack"
+					if beforeAck {
+						writer = io.MultiWriter(clientConn, &stalledWriter{release: release})
+					}
+					client := NewClient(clientConn, writer, Options{})
+					var response PromptResponse
+					written := 0
+					done := make(chan error, 1)
+					go func() {
+						var err error
+						response, err = client.PromptWithWritten(t.Context(), PromptRequest{SessionID: "s1"}, func() {
+							written++
+							if !beforeAck {
+								<-release
+							}
+						})
+						done <- err
+					}()
+
+					request, err := readTestMessage(bufio.NewReader(adapter))
+					if err != nil {
+						t.Fatal(err)
+					}
+					synctest.Wait()
+					if (written == 0) != beforeAck {
+						t.Fatalf("before EOF: onWritten called %d times", written)
+					}
+					reply := rpcMessage{JSONRPC: jsonRPCVersion, ID: request.ID}
+					switch frame {
+					case "result":
+						reply.Result = json.RawMessage(`{"stopReason":"end_turn"}`)
+					case "RPC error":
+						reply.Error = &RPCError{Code: -32001, Message: "rejected"}
+					case "wrong ID":
+						reply.ID = json.RawMessage(`-1`)
+						reply.Result = json.RawMessage(`{"stopReason":"end_turn"}`)
+					}
+					if frame != "no reply" {
+						if err := writeTestMessage(adapter, reply); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := adapter.Close(); err != nil {
+						t.Fatal(err)
+					}
+					<-client.Done()
+					synctest.Wait()
+					if beforeAck && written != 0 {
+						t.Fatalf("onWritten fired before write returned: %d", written)
+					}
+					if beforeAck && (frame == "no reply" || frame == "wrong ID") {
+						select {
+						case err = <-done:
+							if !errors.Is(err, io.EOF) {
+								t.Fatalf("unacknowledged write: err = %v, want EOF", err)
+							}
+						default:
+							t.Fatal("unmatched call still waiting on the blocked write after EOF")
+						}
+						return
+					}
+					unblock()
+					err = <-done
+					if written != 1 {
+						t.Fatalf("onWritten called %d times, want once", written)
+					}
+					switch frame {
+					case "result":
+						if err != nil || response.StopReason != StopReasonEndTurn {
+							t.Fatalf("response = %+v, err = %v", response, err)
+						}
+					case "RPC error":
+						if rpcErr, ok := errors.AsType[*RPCError](err); !ok || rpcErr.Code != reply.Error.Code || rpcErr.Message != reply.Error.Message {
+							t.Fatalf("err = %v, want %v", err, reply.Error)
+						}
+					case "no reply", "wrong ID":
+						if !errors.Is(err, io.EOF) {
+							t.Fatalf("err = %v, want EOF after acknowledged write", err)
+						}
+					}
+				})
+			})
+		}
+	}
+}
+
+func TestClientBlockedWriteInterrupted(t *testing.T) {
+	for _, interrupt := range []string{"Close", "cancel", "write failure"} {
+		for _, frame := range []string{"no reply", "matched reply", "matched reply then EOF"} {
+			t.Run(interrupt+"/"+frame, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					clientConn, adapter := net.Pipe()
+					defer func() { _ = clientConn.Close() }()
+					defer func() { _ = adapter.Close() }()
+					gate, writer := io.Pipe()
+					defer func() { _ = gate.Close() }()
+					defer func() { _ = writer.Close() }()
+					client := NewClient(clientConn, io.MultiWriter(clientConn, writer), Options{})
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+					done := make(chan error, 1)
+					go func() {
+						done <- client.CallWithWritten(ctx, "slow", nil, nil, func() {
+							t.Error("onWritten fired for an abandoned write")
+						})
+					}()
+					request, err := readTestMessage(bufio.NewReader(adapter))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if frame != "no reply" {
+						if err := writeTestMessage(adapter, rpcMessage{JSONRPC: jsonRPCVersion, ID: request.ID, Result: json.RawMessage(`null`)}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if frame == "matched reply then EOF" {
+						_ = adapter.Close()
+						<-client.Done()
+					}
+					synctest.Wait()
+					var wantErr error
+					switch interrupt {
+					case "Close":
+						_ = client.Close()
+						wantErr = ErrClosed
+					case "cancel":
+						cancel()
+						wantErr = context.Canceled
+					case "write failure":
+						wantErr = errors.New("injected write failure")
+						_ = gate.CloseWithError(wantErr)
+					}
+					if frame == "matched reply then EOF" && interrupt != "cancel" {
+						wantErr = io.EOF
+					}
+					synctest.Wait()
+					select {
+					case err := <-done:
+						if !errors.Is(err, wantErr) {
+							t.Fatalf("call error = %v, want %v", err, wantErr)
+						}
+					default:
+						t.Fatal("call still waiting on the blocked write")
+					}
+				})
+			})
+		}
 	}
 }
 

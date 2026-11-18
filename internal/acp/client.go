@@ -83,13 +83,13 @@ type Client struct {
 	nextID  atomic.Int64
 
 	pendingMu sync.Mutex
-	pending   map[string]chan rpcResponse
+	pending   map[string]*pendingCall
 
-	closeOnce sync.Once
-	closed    chan struct{}
-	done      chan struct{}
-	errMu     sync.Mutex
-	err       error
+	closeOnce      sync.Once
+	closeRequested chan struct{}
+	closed         chan struct{}
+	done           chan struct{}
+	err            error
 }
 
 type rpcMessage struct {
@@ -101,9 +101,9 @@ type rpcMessage struct {
 	Error   *RPCError       `json:"error,omitempty"`
 }
 
-type rpcResponse struct {
-	result json.RawMessage
-	err    error
+type pendingCall struct {
+	done  chan struct{}
+	reply *rpcMessage
 }
 
 func NewClient(reader io.Reader, writer io.Writer, opts Options) *Client {
@@ -114,14 +114,15 @@ func NewClient(reader io.Reader, writer io.Writer, opts Options) *Client {
 		opts.MaxConcurrentRequests = DefaultMaxConcurrentRequests
 	}
 	client := &Client{
-		reader:      bufio.NewReaderSize(reader, min(opts.MaxMessageBytes, 64<<10)),
-		writer:      writer,
-		opts:        opts,
-		requestGate: make(chan struct{}, opts.MaxConcurrentRequests),
-		rejectGate:  make(chan struct{}, opts.MaxConcurrentRequests),
-		pending:     make(map[string]chan rpcResponse),
-		closed:      make(chan struct{}),
-		done:        make(chan struct{}),
+		reader:         bufio.NewReaderSize(reader, min(opts.MaxMessageBytes, 64<<10)),
+		writer:         writer,
+		opts:           opts,
+		requestGate:    make(chan struct{}, opts.MaxConcurrentRequests),
+		rejectGate:     make(chan struct{}, opts.MaxConcurrentRequests),
+		pending:        make(map[string]*pendingCall),
+		closeRequested: make(chan struct{}),
+		closed:         make(chan struct{}),
+		done:           make(chan struct{}),
 	}
 	client.nextID.Store(0)
 	go client.readLoop()
@@ -131,13 +132,16 @@ func NewClient(reader io.Reader, writer io.Writer, opts Options) *Client {
 func (c *Client) Done() <-chan struct{} { return c.done }
 
 func (c *Client) Err() error {
-	c.errMu.Lock()
-	defer c.errMu.Unlock()
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
 	return c.err
 }
 
 func (c *Client) Close() error {
-	c.fail(ErrClosed)
+	c.closeOnce.Do(func() {
+		c.fail(ErrClosed)
+		close(c.closeRequested)
+	})
 	return nil
 }
 
@@ -163,19 +167,20 @@ func (c *Client) call(ctx context.Context, method string, params, result any, on
 	if err != nil {
 		return fmt.Errorf("marshal ACP %s request: %w", method, err)
 	}
-	responseCh := make(chan rpcResponse, 1)
+	pending := &pendingCall{done: make(chan struct{})}
 	key := string(idRaw)
 	c.pendingMu.Lock()
-	select {
-	case <-c.closed:
+	if err := c.err; err != nil {
 		c.pendingMu.Unlock()
-		return c.closedError()
-	default:
+		return err
 	}
-	c.pending[key] = responseCh
+	c.pending[key] = pending
 	c.pendingMu.Unlock()
 
 	request := rpcMessage{JSONRPC: jsonRPCVersion, ID: idRaw, Method: method, Params: paramsRaw}
+	cancelRequest := func() {
+		_ = c.Notify(context.Background(), MethodCancelRequest, CancelRequestNotification{RequestID: idRaw})
+	}
 	// The request write blocks indefinitely when the adapter stops reading
 	// stdin, so it must honor cancellation like the response wait below: run
 	// it in a goroutine and abandon it on ctx expiry. If the abandoned write
@@ -183,53 +188,70 @@ func (c *Client) call(ctx context.Context, method string, params, result any, on
 	// so the adapter does not keep executing a request whose caller gave up.
 	writeDone := make(chan error, 1)
 	go func() { writeDone <- c.writeMessage(request) }()
-	select {
-	case err := <-writeDone:
-		if err != nil {
-			c.removePending(key)
-			return err
-		}
-	case <-ctx.Done():
+	if err := c.waitForWrite(ctx, pending, writeDone, cancelRequest); err != nil {
 		c.removePending(key)
-		go func() {
-			if err := <-writeDone; err == nil {
-				_ = c.Notify(context.Background(), MethodCancelRequest, CancelRequestNotification{RequestID: idRaw})
-			}
-		}()
-		return ctx.Err()
-	case <-c.closed:
-		c.removePending(key)
-		return c.closedError()
+		return err
 	}
 	if onWritten != nil {
 		onWritten()
 	}
 
 	select {
-	case response := <-responseCh:
-		if response.err != nil {
-			return response.err
-		}
-		if result == nil || len(response.result) == 0 || bytes.Equal(response.result, []byte("null")) {
-			return nil
-		}
-		if err := json.Unmarshal(response.result, result); err != nil {
-			return fmt.Errorf("decode ACP %s response: %w", method, err)
-		}
-		return nil
+	case <-pending.done:
 	case <-ctx.Done():
-		c.removePending(key)
-		// Best-effort courtesy cancel: it must not block the caller past its
-		// already-expired deadline when the adapter stopped reading stdin, so
-		// it is dispatched asynchronously; adapter exit unblocks the write.
-		go func() {
-			_ = c.Notify(context.Background(), MethodCancelRequest, CancelRequestNotification{RequestID: idRaw})
-		}()
-		return ctx.Err()
-	case <-c.closed:
-		c.removePending(key)
+		if c.removePending(key) {
+			go cancelRequest()
+			return ctx.Err()
+		}
+	}
+	response := pending.reply
+	if response == nil {
 		return c.closedError()
 	}
+	if response.Error != nil {
+		return response.Error
+	}
+	if result != nil && len(response.Result) != 0 && !bytes.Equal(response.Result, []byte("null")) {
+		if err := json.Unmarshal(response.Result, result); err != nil {
+			return fmt.Errorf("decode ACP %s response: %w", method, err)
+		}
+	}
+	return nil
+}
+
+func (c *Client) waitForWrite(ctx context.Context, pending *pendingCall, written <-chan error, cancelRequest func()) error {
+	select {
+	case err := <-written:
+		return err
+	case <-ctx.Done():
+	case <-pending.done:
+		if pending.reply != nil {
+			select {
+			case err := <-written:
+				return err
+			case <-ctx.Done():
+			case <-c.closeRequested:
+			}
+		}
+	}
+	select {
+	case err := <-written:
+		return err
+	default:
+	}
+	if err := ctx.Err(); err != nil {
+		go func() {
+			select {
+			case err := <-written:
+				if err == nil {
+					cancelRequest()
+				}
+			case <-c.closed:
+			}
+		}()
+		return err
+	}
+	return c.closedError()
 }
 
 func (c *Client) Notify(ctx context.Context, method string, params any) error {
@@ -397,19 +419,12 @@ func (c *Client) readLoop() {
 func (c *Client) deliverResponse(message rpcMessage) {
 	key := canonicalID(message.ID)
 	c.pendingMu.Lock()
-	responseCh, ok := c.pending[key]
-	if ok {
+	defer c.pendingMu.Unlock()
+	if pending := c.pending[key]; pending != nil {
+		pending.reply = &message
+		close(pending.done)
 		delete(c.pending, key)
 	}
-	c.pendingMu.Unlock()
-	if !ok {
-		return
-	}
-	if message.Error != nil {
-		responseCh <- rpcResponse{err: message.Error}
-		return
-	}
-	responseCh <- rpcResponse{result: cloneRaw(message.Result)}
 }
 
 // dispatchRequest bounds concurrently handled adapter-initiated requests.
@@ -492,20 +507,17 @@ func (c *Client) fail(err error) {
 	if err == nil {
 		err = ErrClosed
 	}
-	c.closeOnce.Do(func() {
-		c.errMu.Lock()
-		c.err = err
-		c.errMu.Unlock()
-		close(c.closed)
-
-		c.pendingMu.Lock()
-		pending := c.pending
-		c.pending = make(map[string]chan rpcResponse)
-		c.pendingMu.Unlock()
-		for _, responseCh := range pending {
-			responseCh <- rpcResponse{err: err}
-		}
-	})
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	if c.err != nil {
+		return
+	}
+	c.err = err
+	close(c.closed)
+	for _, pending := range c.pending {
+		close(pending.done)
+	}
+	clear(c.pending)
 }
 
 func (c *Client) closedError() error {
@@ -515,10 +527,12 @@ func (c *Client) closedError() error {
 	return ErrClosed
 }
 
-func (c *Client) removePending(key string) {
+func (c *Client) removePending(key string) bool {
 	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	_, ok := c.pending[key]
 	delete(c.pending, key)
-	c.pendingMu.Unlock()
+	return ok
 }
 
 func marshalOptional(value any) (json.RawMessage, error) {
