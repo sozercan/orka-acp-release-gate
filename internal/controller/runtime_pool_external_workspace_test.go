@@ -15,6 +15,7 @@ import (
 	corev1alpha1 "github.com/orka-agents/orka/api/v1alpha1"
 	harnessv2 "github.com/orka-agents/orka/internal/harness/v2"
 	appsv1 "k8s.io/api/apps/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -60,6 +61,9 @@ func newExternalRuntimePoolFixture(t *testing.T) *externalRuntimePoolFixture {
 			Conditions: []metav1.Condition{{Type: string(workspacev1alpha1.ConditionProviderHeartbeat), Status: metav1.ConditionTrue, ObservedGeneration: 1}, {Type: string(workspacev1alpha1.ConditionProviderCompatible), Status: metav1.ConditionTrue, ObservedGeneration: 1}}}}
 	scheme := runtimePoolTestScheme(t)
 	if err := workspacev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinationv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	supervisor := &fakeRuntimePoolSupervisorClient{}

@@ -19,9 +19,6 @@ func preRequestDeletionFixture(t *testing.T) (*externalRuntimePoolFixture, *core
 	t.Helper()
 	ctx := context.Background()
 	f := newExternalRuntimePoolFixture(t)
-	if err := coordinationv1.AddToScheme(f.r.Scheme); err != nil {
-		t.Fatal(err)
-	}
 	w := f.currentWorkspace(t)
 	w.Finalizers = []string{executionWorkspaceFinalizer}
 	w.Spec.AttachmentEpoch = 1

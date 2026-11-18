@@ -11,7 +11,6 @@ import (
 	workspacev1alpha1 "github.com/orka-agents/orka-workspace/api/v1alpha1"
 	corev1alpha1 "github.com/orka-agents/orka/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
-	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -74,9 +73,6 @@ func TestWorkspaceCleanupOnlyPreservesPlainRuntimePoolAdmission(t *testing.T) {
 func TestExternalWorkspaceCleanupOnlyRetiresExactExistingRuntime(t *testing.T) {
 	ctx := context.Background()
 	f := newExternalRuntimePoolFixture(t)
-	if err := coordinationv1.AddToScheme(f.r.Scheme); err != nil {
-		t.Fatal(err)
-	}
 	workspace, pod := f.serve(t)
 	request := workspace.Spec.Workload.DeepCopy()
 	auth := runtimePoolTestPrivateAuthSecret(t, f.r, f.pool)
