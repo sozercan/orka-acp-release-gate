@@ -457,7 +457,7 @@ func (h *Handlers) writeSessionDeletedStreamComplete(
 	if h == nil || h.sessionStore == nil {
 		return true
 	}
-	if _, err := h.sessionStore.GetSession(ctx, namespace, sessionName); err != nil {
+	if _, err := transcriptSessionType(ctx, h.sessionStore, namespace, sessionName); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			if !writeExecutionEventStreamCompleteFrame(w, lastSeq, "SessionDeleted") {
 				metrics.RecordExecutionEventStreamError("session", "write")
