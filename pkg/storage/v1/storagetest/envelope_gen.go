@@ -1268,6 +1268,16 @@ func (p envelopedState) UpdateMemory(ctx context.Context, a1 *storagev1.Memory) 
 	return err
 }
 
+func (p envelopedState) UpdateMemoryIfCurrent(ctx context.Context, a1 storagev1.Memory) (*storagev1.Memory, error) {
+	var r0 *storagev1.Memory
+	err := p.ops.run(ctx, writeCall{method: "UpdateMemoryIfCurrent", contract: storagev1.StateContract, args: []any{a1}}, func(ctx context.Context) error {
+		var err error
+		r0, err = p.StateProvider.UpdateMemoryIfCurrent(ctx, a1)
+		return err
+	})
+	return r0, err
+}
+
 func (p envelopedState) UpdateMonitorRun(ctx context.Context, a1 *storagev1.MonitorRun) error {
 	var w1 *storagev1.MonitorRun
 	err := p.ops.run(ctx, writeCall{method: "UpdateMonitorRun", contract: storagev1.StateContract, args: []any{a1}}, func(ctx context.Context) error {

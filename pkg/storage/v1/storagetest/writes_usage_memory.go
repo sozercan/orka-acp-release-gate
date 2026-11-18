@@ -149,6 +149,17 @@ func init() {
 			observe: observeMemories,
 		},
 		usageCase{
+			method: "UpdateMemoryIfCurrent",
+			setup: func(t *testing.T, p storagev1.StateProvider) {
+				require.NoError(t, p.CreateMemory(t.Context(), catalogMemory("first")))
+			},
+			afterCommit: func(t *testing.T, p storagev1.StateProvider) {
+				require.NoError(t, p.DeleteMemory(t.Context(), memoryTenant, "mem-1"))
+			},
+			args:    fixed(storagev1.Memory{Namespace: memoryTenant, ID: "mem-1", Generation: 1, Content: "updated"}),
+			observe: observeMemories,
+		},
+		usageCase{
 			method: "DeleteMemory",
 			setup: func(t *testing.T, p storagev1.StateProvider) {
 				require.NoError(t, p.CreateMemory(t.Context(), catalogMemory("first")))

@@ -25,6 +25,85 @@ import (
 
 const memoryProposalTestUser = "system:serviceaccount:orka-system:jordan"
 
+type memoryEditOverlapStore struct {
+	store.MemoryStore
+	afterRead func(context.Context, string, string) error
+}
+
+func (s *memoryEditOverlapStore) GetMemory(ctx context.Context, namespace, id string) (*store.Memory, error) {
+	memory, err := s.MemoryStore.GetMemory(ctx, namespace, id)
+	if err == nil && s.afterRead != nil {
+		err = s.afterRead(ctx, namespace, id)
+		s.afterRead = nil
+	}
+	return memory, err
+}
+
+func TestMemoryEditOverlappingLifecycleChange(t *testing.T) {
+	for _, route := range []struct{ name, path string }{
+		{"external", "/api/v1/memories/mem?namespace=default"},
+		{"internal", "/internal/v1/memories/default/mem"},
+	} {
+		for _, change := range []string{"delete", "disable"} {
+			t.Run(route.name+"/"+change, func(t *testing.T) {
+				db, err := sqlite.NewDB(":memory:")
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = db.Close() })
+				backing := testStorageClient(sqlite.NewStore(db, ":memory:"))
+				memory := store.Memory{Namespace: "default", ID: "mem", Content: "original", Tags: []string{"keep"}}
+				require.NoError(t, backing.CreateMemory(t.Context(), &memory))
+				interleaved := &memoryEditOverlapStore{MemoryStore: backing, afterRead: backing.DeleteMemory}
+				if change == "disable" {
+					interleaved.afterRead = func(ctx context.Context, ns, id string) error {
+						return backing.SetMemoryDisabled(ctx, ns, id, true)
+					}
+				}
+				app := fiber.New()
+				app.Use(func(c fiber.Ctx) error {
+					c.Locals(UserInfoContextKey, &UserInfo{Namespace: "default", Username: "system:serviceaccount:default:worker"})
+					return c.Next()
+				})
+				external := NewHandlers(HandlersConfig{MemoryStore: interleaved})
+				internal := NewInternalHandlers(nil, nil, nil, nil, nil, InternalHandlersConfig{MemoryStore: interleaved})
+				app.Put("/api/v1/memories/:id", external.UpdateMemory)
+				app.Put("/internal/v1/memories/:namespace/:id", internal.UpdateMemory)
+				edit := func() *http.Response {
+					req := httptest.NewRequest(http.MethodPut, route.path, strings.NewReader(`{"content":"edited token=placeholder","generation":2}`))
+					req.Header.Set("Content-Type", "application/json")
+					resp, err := app.Test(req)
+					require.NoError(t, err)
+					t.Cleanup(func() { _ = resp.Body.Close() })
+					return resp
+				}
+				require.Equal(t, http.StatusConflict, edit().StatusCode)
+				stored, err := backing.GetMemory(t.Context(), "default", "mem")
+				require.NoError(t, err)
+				require.Equal(t, "original", stored.Content)
+				require.Equal(t, uint64(2), stored.Generation)
+				require.True(t, stored.Disabled)
+				require.Equal(t, change == "delete", stored.Deleted)
+				visible, err := backing.ListMemories(t.Context(), store.MemoryFilter{Namespace: "default"})
+				require.NoError(t, err)
+				require.Empty(t, visible)
+
+				if change == "disable" {
+					resp := edit()
+					require.Equal(t, http.StatusOK, resp.StatusCode)
+					var updated store.Memory
+					require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
+					require.Equal(t, "edited token=[REDACTED]", updated.Content)
+					require.Equal(t, []string{"keep"}, updated.Tags)
+					require.True(t, updated.Disabled)
+					require.Equal(t, uint64(3), updated.Generation)
+					stored, err = backing.GetMemory(t.Context(), "default", "mem")
+					require.NoError(t, err)
+					require.Equal(t, updated, *stored)
+				}
+			})
+		}
+	}
+}
+
 // setupMemoryProposalApp serves review and apply as the given identity; nil
 // leaves the request without one.
 func setupMemoryProposalApp(t *testing.T, ui *UserInfo) (*fiber.App, *storageclient.Client) {

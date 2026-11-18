@@ -323,12 +323,9 @@ func updateNamespaceMemory(c fiber.Ctx, memoryStore store.MemoryStore, namespace
 	if strings.TrimSpace(memory.Content) == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "content is required")
 	}
-	if err := memoryStore.UpdateMemory(c.Context(), memory); err != nil {
-		return memoryStoreError("update memory", "memory", err)
-	}
-	updated, err := memoryStore.GetMemory(c.Context(), namespace, c.Params("id"))
+	updated, err := memoryStore.UpdateMemoryIfCurrent(c.Context(), *memory)
 	if err != nil {
-		return memoryStoreError("get memory", "memory", err)
+		return memoryStoreError("update memory", "memory", err)
 	}
 	return c.JSON(updated)
 }

@@ -2911,6 +2911,22 @@ func (p *stateProvider) UpdateMemory(ctx context.Context, a1 *storagev1.Memory) 
 	return err
 }
 
+func (p *stateProvider) UpdateMemoryIfCurrent(ctx context.Context, a1 storagev1.Memory) (*storagev1.Memory, error) {
+	var r0 *storagev1.Memory
+	injected, err := p.injector.call(ctx, p.contract, "UpdateMemoryIfCurrent", func(ctx context.Context) (err error) {
+		if responseWillBeLost(ctx) {
+			a1 = cloneArgument(a1)
+		}
+		r0, err = p.inner.UpdateMemoryIfCurrent(ctx, a1)
+		return err
+	})
+	if injected {
+		var z0 *storagev1.Memory
+		return z0, err
+	}
+	return r0, err
+}
+
 func (p *stateProvider) UpdateMonitorRun(ctx context.Context, a1 *storagev1.MonitorRun) error {
 	_, err := p.injector.call(ctx, p.contract, "UpdateMonitorRun", func(ctx context.Context) error {
 		if responseWillBeLost(ctx) {

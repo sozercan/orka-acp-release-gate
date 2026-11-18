@@ -227,6 +227,9 @@ const (
 //     ErrConflict. It ignores the record's Generation and SupersededBy, and
 //     adds one to the stored Generation when any field it replaces changes;
 //     an update that changes none keeps it.
+//   - UpdateMemoryIfCurrent replaces the same fields and returns the updated
+//     record only if the stored generation equals the supplied Generation.
+//     A stale generation returns ErrPreconditionFailed and changes nothing.
 //   - DeleteMemory keeps the record, marking it deleted and disabled.
 //     SetMemoryDisabled on a deleted memory returns ErrNotFound. Each adds one
 //     to Generation when it changes Deleted or Disabled, and leaves it
@@ -245,6 +248,7 @@ type MemoryStore interface {
 	GetMemory(ctx context.Context, namespace, id string) (*Memory, error)
 	ListMemories(ctx context.Context, filter MemoryFilter) ([]Memory, error)
 	UpdateMemory(ctx context.Context, memory *Memory) error
+	UpdateMemoryIfCurrent(ctx context.Context, memory Memory) (*Memory, error)
 	DeleteMemory(ctx context.Context, namespace, id string) error
 	SetMemoryDisabled(ctx context.Context, namespace, id string, disabled bool) error
 	RecordMemoryRecall(ctx context.Context, recall MemoryRecall) error

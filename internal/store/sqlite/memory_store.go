@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -142,24 +143,58 @@ func (s *Store) ListMemories(ctx context.Context, filter store.MemoryFilter) ([]
 // UpdateMemory updates mutable memory fields.
 func (s *Store) UpdateMemory(ctx context.Context, memory *store.Memory) error {
 	_, err := writeOperationInto(ctx, s, "UpdateMemory", nil, memory, func(ctx context.Context) (noResult, error) {
-		return noResult{}, s.updateMemoryWrite(ctx, memory)
+		args, err := memoryUpdateArgs(memory)
+		if err != nil {
+			return noResult{}, err
+		}
+		res, err := s.taskDataExecutor(ctx).ExecContext(ctx, updateMemorySQL, args...)
+		if err != nil {
+			return noResult{}, uniqueConflict(err)
+		}
+		return noResult{}, ensureRowsAffected(res)
 	})
 	return err
 }
 
-func (s *Store) updateMemoryWrite(ctx context.Context, memory *store.Memory) error {
+func (s *Store) UpdateMemoryIfCurrent(ctx context.Context, memory store.Memory) (*store.Memory, error) {
+	return writeOperation(ctx, s, "UpdateMemoryIfCurrent", nil, func(ctx context.Context) (*store.Memory, error) {
+		args, err := memoryUpdateArgs(&memory)
+		if err != nil {
+			return nil, err
+		}
+		updated, err := scanMemory(s.taskDataExecutor(ctx).QueryRowContext(ctx,
+			updateMemorySQL+` AND generation = ? RETURNING `+memoryColumns, append(args, strconv.FormatUint(memory.Generation, 10))...))
+		if errors.Is(err, sql.ErrNoRows) {
+			if _, err := s.GetMemory(ctx, memory.Namespace, memory.ID); err != nil {
+				return nil, err
+			}
+			return nil, store.PreconditionFailedErrorf("memory %q changed since it was read", memory.ID)
+		}
+		return updated, uniqueConflict(err)
+	})
+}
+
+const updateMemorySQL = `UPDATE memories
+		 SET generation = generation + CASE WHEN session_name = ? AND agent_name = ? AND task_name = ? AND parent_task = ?
+		         AND source = ? AND source_proposal_id = ? AND content = ? AND tags_json = ? AND disabled = ? AND deleted = ?
+		         THEN 0 ELSE 1 END,
+		     session_name = ?, agent_name = ?, task_name = ?, parent_task = ?, source = ?, source_proposal_id = ?, content = ?, tags_json = ?,
+		     disabled = ?, deleted = ?, updated_at = CURRENT_TIMESTAMP
+		 WHERE namespace = ? AND id = ?`
+
+func memoryUpdateArgs(memory *store.Memory) ([]any, error) {
 	if memory == nil {
-		return store.ValidationErrorf("memory is required")
+		return nil, store.ValidationErrorf("memory is required")
 	}
 	if memory.Namespace == "" || memory.ID == "" {
-		return store.ValidationErrorf("namespace and id are required")
+		return nil, store.ValidationErrorf("namespace and id are required")
 	}
 	if strings.TrimSpace(memory.Content) == "" {
-		return store.ValidationErrorf("content is required")
+		return nil, store.ValidationErrorf("content is required")
 	}
 	tagsJSON, err := marshalTags(memory.Tags)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// SQLite evaluates every SET expression against the row as it was, so
@@ -169,21 +204,7 @@ func (s *Store) updateMemoryWrite(ctx context.Context, memory *store.Memory) err
 	fields := []any{memory.SessionName, memory.AgentName, memory.TaskName, memory.ParentTask, memory.Source, memory.SourceProposalID,
 		memory.Content, tagsJSON, memory.Disabled, memory.Deleted}
 	args := append(append([]any{}, fields...), fields...)
-	args = append(args, memory.Namespace, memory.ID)
-	res, err := s.taskDataExecutor(ctx).ExecContext(ctx,
-		`UPDATE memories
-		 SET generation = generation + CASE WHEN session_name = ? AND agent_name = ? AND task_name = ? AND parent_task = ?
-		         AND source = ? AND source_proposal_id = ? AND content = ? AND tags_json = ? AND disabled = ? AND deleted = ?
-		         THEN 0 ELSE 1 END,
-		     session_name = ?, agent_name = ?, task_name = ?, parent_task = ?, source = ?, source_proposal_id = ?, content = ?, tags_json = ?,
-		     disabled = ?, deleted = ?, updated_at = CURRENT_TIMESTAMP
-		 WHERE namespace = ? AND id = ?`,
-		args...,
-	)
-	if err != nil {
-		return uniqueConflict(err)
-	}
-	return ensureRowsAffected(res)
+	return append(args, memory.Namespace, memory.ID), nil
 }
 
 // DeleteMemory soft-deletes a memory by ID within a namespace.
@@ -957,9 +978,11 @@ func primarySQLiteCode(code int) int {
 	return code & 0xff
 }
 
+const memoryColumns = `id, namespace, session_name, agent_name, task_name, parent_task, source, source_proposal_id, content, tags_json,
+		disabled, deleted, created_at, updated_at, last_recalled_at, recalled_count, generation, superseded_by`
+
 func selectMemorySQL() string {
-	return `SELECT id, namespace, session_name, agent_name, task_name, parent_task, source, source_proposal_id, content, tags_json,
-		disabled, deleted, created_at, updated_at, last_recalled_at, recalled_count, generation, superseded_by FROM memories`
+	return `SELECT ` + memoryColumns + ` FROM memories`
 }
 
 func appendMemoryFilters(query string, args *[]any, filter store.MemoryFilter) string {
