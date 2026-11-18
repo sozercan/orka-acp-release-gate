@@ -45,7 +45,8 @@ func (r *ExecutionWorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if r.CleanupOnly && workspace.DeletionTimestamp.IsZero() {
+	acpDeletionRequested := workspace.Spec.DesiredState == workspacev1alpha1.ExecutionWorkspaceDesiredDeleted && workspaceHasACPControllerOwnership(workspace)
+	if r.CleanupOnly && workspace.DeletionTimestamp.IsZero() && !acpDeletionRequested {
 		// Cleanup-only mode admits nothing new, but the cleanup finalizer
 		// must still be installed: a workspace created just before the API
 		// was disabled would otherwise never gain it, retention would wait on
@@ -74,7 +75,7 @@ func (r *ExecutionWorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
-	if workspace.Spec.DesiredState == workspacev1alpha1.ExecutionWorkspaceDesiredDeleted && workspaceHasACPControllerOwnership(workspace) {
+	if acpDeletionRequested {
 		// Deleting a linked RuntimePool makes Deleted terminal without deleting
 		// the object. Delete it too so finalization frees the deterministic
 		// Session name instead of leaving a workspace no Task can attach.

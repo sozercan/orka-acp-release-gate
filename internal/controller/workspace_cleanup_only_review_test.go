@@ -11,6 +11,7 @@ import (
 	workspacev1alpha1 "github.com/orka-agents/orka-workspace/api/v1alpha1"
 	corev1alpha1 "github.com/orka-agents/orka/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -73,6 +74,9 @@ func TestWorkspaceCleanupOnlyPreservesPlainRuntimePoolAdmission(t *testing.T) {
 func TestExternalWorkspaceCleanupOnlyRetiresExactExistingRuntime(t *testing.T) {
 	ctx := context.Background()
 	f := newExternalRuntimePoolFixture(t)
+	if err := coordinationv1.AddToScheme(f.r.Scheme); err != nil {
+		t.Fatal(err)
+	}
 	workspace, pod := f.serve(t)
 	request := workspace.Spec.Workload.DeepCopy()
 	auth := runtimePoolTestPrivateAuthSecret(t, f.r, f.pool)
@@ -97,6 +101,27 @@ func TestExternalWorkspaceCleanupOnlyRetiresExactExistingRuntime(t *testing.T) {
 		workspace.Spec.Retirement.Identity != workspace.Status.Allocation.Identity || workspace.Spec.Retirement.Sequence != request.Sequence {
 		t.Fatal("cleanup-only mode did not authorize the exact drained runtime's retirement")
 	}
+	if workspace.Spec.DesiredState != workspacev1alpha1.ExecutionWorkspaceDesiredDeleted || !workspace.DeletionTimestamp.IsZero() {
+		t.Fatal("pool retirement did not set Deleted intent on the still-existing workspace")
+	}
+	core := &ExecutionWorkspaceReconciler{Client: f.r.Client, APIReader: f.r.Client, CleanupOnly: true}
+	key := client.ObjectKeyFromObject(workspace)
+	reconcileCore := func() {
+		t.Helper()
+		if _, err := core.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reconcileCore()
+	workspace = f.currentWorkspace(t)
+	if !controllerutil.ContainsFinalizer(workspace, executionWorkspaceFinalizer) || !workspace.DeletionTimestamp.IsZero() {
+		t.Fatal("cleanup-only core did not install the finalizer before requesting deletion")
+	}
+	reconcileCore()
+	workspace = f.currentWorkspace(t)
+	if workspace.UID != f.workspace.UID || workspace.DeletionTimestamp.IsZero() || !controllerutil.ContainsFinalizer(workspace, executionWorkspaceFinalizer) {
+		t.Fatal("cleanup-only core did not request finalizer-held deletion of the retired workspace")
+	}
 	workspace.Status.Allocation.Startup = nil
 	workspace.Status.Allocation.State = workspacev1alpha1.AllocationDeleted
 	workspace.Status.ObservedGeneration = workspace.Generation
@@ -106,8 +131,14 @@ func TestExternalWorkspaceCleanupOnlyRetiresExactExistingRuntime(t *testing.T) {
 		PersistentVolumes: workspacev1alpha1.DispositionDeleted, Checkpoints: workspacev1alpha1.DispositionDeleted,
 		ProviderResources: workspacev1alpha1.DispositionDeleted,
 	}
+	workspace.Status.State = workspacev1alpha1.ExecutionWorkspaceStateDeleted
+	workspace.Status.Disposition = workspace.Status.Allocation.Disposition.DeepCopy()
 	if err := f.r.Status().Update(ctx, workspace); err != nil {
 		t.Fatal(err)
+	}
+	reconcileCore()
+	if !controllerutil.ContainsFinalizer(f.currentWorkspace(t), executionWorkspaceFinalizer) {
+		t.Fatal("workspace finalizer released before its linked pool was gone")
 	}
 	runtimePoolReconcile(t, f.r, f.pool)
 	kept := &corev1.Secret{}
@@ -133,6 +164,10 @@ func TestExternalWorkspaceCleanupOnlyRetiresExactExistingRuntime(t *testing.T) {
 	}
 	if len(credentials.Items) != 0 || f.seeds != seeds || !reflect.DeepEqual(f.currentWorkspace(t).Spec.Workload, request) {
 		t.Fatal("cleanup-only retirement retained credentials or published a replacement runtime")
+	}
+	reconcileCore()
+	if err := f.r.Get(ctx, key, &workspacev1alpha1.ExecutionWorkspace{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("retired workspace was not finalized: %v", err)
 	}
 }
 
@@ -177,16 +212,19 @@ func TestWorkspaceCleanupOnlyDoesNotRecoverGenericFinalizer(t *testing.T) {
 	f := newExternalRuntimePoolFixture(t)
 	workspace := f.currentWorkspace(t)
 	delete(workspace.Annotations, acpExecutionWorkspacePoolAnnotation)
-	if err := f.r.Update(ctx, workspace); err != nil {
-		t.Fatal(err)
-	}
-	before := workspace.DeepCopy()
 	core := &ExecutionWorkspaceReconciler{Client: f.r.Client, APIReader: f.r.Client, CleanupOnly: true}
-	if _, err := core.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(workspace)}); err != nil {
-		t.Fatal(err)
-	}
-	workspace = f.currentWorkspace(t)
-	if !reflect.DeepEqual(workspace, before) {
-		t.Fatal("provider route alone authorized cleanup-only core ownership")
+	for _, state := range []workspacev1alpha1.ExecutionWorkspaceDesiredState{workspacev1alpha1.ExecutionWorkspaceDesiredReady, workspacev1alpha1.ExecutionWorkspaceDesiredDeleted} {
+		workspace.Spec.DesiredState = state
+		if err := f.r.Update(ctx, workspace); err != nil {
+			t.Fatal(err)
+		}
+		before := workspace.DeepCopy()
+		if _, err := core.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(workspace)}); err != nil {
+			t.Fatal(err)
+		}
+		workspace = f.currentWorkspace(t)
+		if !reflect.DeepEqual(workspace, before) {
+			t.Fatalf("cleanup-only core mutated a generic workspace with desired state %s", state)
+		}
 	}
 }
