@@ -129,7 +129,7 @@ func checkConsolidationTargets(ctx context.Context, tx *sql.Tx, proposal *store.
 func retireConsolidationTargets(ctx context.Context, tx *sql.Tx, proposal *store.MemoryProposal, replacement string, at time.Time) error {
 	for _, target := range proposal.Targets {
 		query := `UPDATE memories
-			 SET deleted = TRUE, disabled = TRUE, superseded_by = ?, generation = generation + 1, updated_at = ?
+			 SET deleted = TRUE, disabled = TRUE, superseded_by = ?, generation = ` + nextMemoryGenerationSQL + `, updated_at = ?
 			 WHERE namespace = ? AND id = ? AND generation = ? AND deleted = FALSE`
 		args := []any{replacement, at, proposal.Namespace, target.MemoryID, target.Generation}
 		if replacement == "" {
@@ -137,7 +137,7 @@ func retireConsolidationTargets(ctx context.Context, tx *sql.Tx, proposal *store
 			// it keeps its generation, and other proposals that read it stay
 			// current.
 			query = `UPDATE memories
-				 SET generation = generation + CASE WHEN disabled = TRUE THEN 0 ELSE 1 END,
+				 SET generation = CASE WHEN disabled = TRUE THEN generation ELSE ` + nextMemoryGenerationSQL + ` END,
 				     updated_at = CASE WHEN disabled = TRUE THEN updated_at ELSE ? END,
 				     disabled = TRUE
 				 WHERE namespace = ? AND id = ? AND generation = ? AND deleted = FALSE`
@@ -145,7 +145,7 @@ func retireConsolidationTargets(ctx context.Context, tx *sql.Tx, proposal *store
 		}
 		res, err := tx.ExecContext(ctx, query, args...)
 		if err != nil {
-			return err
+			return memoryGenerationWriteError(err, proposal.Namespace, target.MemoryID)
 		}
 		rows, err := res.RowsAffected()
 		if err != nil {

@@ -322,7 +322,9 @@ the observable parts.
   It compares the generation and returns the updated record in one atomic write;
   a mismatch returns `ErrPreconditionFailed` without changing the record. API
   edits use this method, never an unconditional fallback. `UpdateMemory` keeps
-  its existing replacement semantics. No SQLite schema migration is needed.
+  its existing replacement semantics. SQLite accepts a no-op edit at its signed
+  64-bit generation limit, but a write that would advance past it returns
+  `ErrConflict` without changing the memory. No SQLite schema migration is needed.
   The revision Orka requires for each part belongs to Orka, not to the
   contract.
   Orka never interprets a provider's `SchemaVersion` beyond equality: a

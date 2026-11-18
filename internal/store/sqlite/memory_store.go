@@ -149,7 +149,7 @@ func (s *Store) UpdateMemory(ctx context.Context, memory *store.Memory) error {
 		}
 		res, err := s.taskDataExecutor(ctx).ExecContext(ctx, updateMemorySQL, args...)
 		if err != nil {
-			return noResult{}, uniqueConflict(err)
+			return noResult{}, memoryGenerationWriteError(uniqueConflict(err), memory.Namespace, memory.ID)
 		}
 		return noResult{}, ensureRowsAffected(res)
 	})
@@ -166,7 +166,7 @@ func (s *Store) UpdateMemoryIfCurrent(ctx context.Context, memory store.Memory) 
 			updated, err := scanMemory(s.taskDataExecutor(ctx).QueryRowContext(ctx,
 				updateMemorySQL+` AND generation = ? RETURNING `+memoryColumns, append(args, int64(memory.Generation))...))
 			if !errors.Is(err, sql.ErrNoRows) {
-				return updated, uniqueConflict(err)
+				return updated, memoryGenerationWriteError(uniqueConflict(err), memory.Namespace, memory.ID)
 			}
 		}
 		var exists bool
@@ -177,14 +177,26 @@ func (s *Store) UpdateMemoryIfCurrent(ctx context.Context, memory store.Memory) 
 		if !exists {
 			return nil, store.ErrNotFound
 		}
-		return nil, store.PreconditionFailedErrorf("memory %q changed since it was read", memory.ID)
+		if memory.Generation > math.MaxInt64 {
+			return nil, store.PreconditionFailedErrorf("expected generation %d for memory %q in namespace %q exceeds SQLite's signed integer limit", memory.Generation, memory.ID, memory.Namespace)
+		}
+		return nil, store.PreconditionFailedErrorf("memory %q in namespace %q does not match expected generation %d", memory.ID, memory.Namespace, memory.Generation)
 	})
 }
 
+const nextMemoryGenerationSQL = `NULLIF(generation, 9223372036854775807) + 1`
+
+func memoryGenerationWriteError(err error, namespace, id string) error {
+	if code, ok := sqliteErrorCode(err); ok && code == sqlite3.SQLITE_CONSTRAINT_NOTNULL && strings.Contains(err.Error(), "NOT NULL constraint failed: memories.generation") {
+		return store.ConflictErrorf("memory %q in namespace %q cannot advance beyond generation %d", id, namespace, int64(math.MaxInt64))
+	}
+	return err
+}
+
 const updateMemorySQL = `UPDATE memories
-		 SET generation = generation + CASE WHEN session_name = ? AND agent_name = ? AND task_name = ? AND parent_task = ?
+		 SET generation = CASE WHEN session_name = ? AND agent_name = ? AND task_name = ? AND parent_task = ?
 		         AND source = ? AND source_proposal_id = ? AND content = ? AND tags_json = ? AND disabled = ? AND deleted = ?
-		         THEN 0 ELSE 1 END,
+		         THEN generation ELSE ` + nextMemoryGenerationSQL + ` END,
 		     session_name = ?, agent_name = ?, task_name = ?, parent_task = ?, source = ?, source_proposal_id = ?, content = ?, tags_json = ?,
 		     disabled = ?, deleted = ?, updated_at = CURRENT_TIMESTAMP
 		 WHERE namespace = ? AND id = ?`
@@ -224,13 +236,13 @@ func (s *Store) DeleteMemory(ctx context.Context, namespace, id string) error {
 func (s *Store) deleteMemoryWrite(ctx context.Context, namespace, id string) error {
 	res, err := s.taskDataExecutor(ctx).ExecContext(ctx,
 		`UPDATE memories
-		 SET generation = generation + CASE WHEN deleted = TRUE AND disabled = TRUE THEN 0 ELSE 1 END,
+		 SET generation = CASE WHEN deleted = TRUE AND disabled = TRUE THEN generation ELSE `+nextMemoryGenerationSQL+` END,
 		     deleted = TRUE, disabled = TRUE, updated_at = CURRENT_TIMESTAMP
 		 WHERE namespace = ? AND id = ?`,
 		namespace, id,
 	)
 	if err != nil {
-		return err
+		return memoryGenerationWriteError(err, namespace, id)
 	}
 	return ensureRowsAffected(res)
 }
@@ -245,13 +257,13 @@ func (s *Store) SetMemoryDisabled(ctx context.Context, namespace, id string, dis
 func (s *Store) setMemoryDisabledWrite(ctx context.Context, namespace, id string, disabled bool) error {
 	res, err := s.taskDataExecutor(ctx).ExecContext(ctx,
 		`UPDATE memories
-		 SET generation = generation + CASE WHEN disabled = ? THEN 0 ELSE 1 END,
+		 SET generation = CASE WHEN disabled = ? THEN generation ELSE `+nextMemoryGenerationSQL+` END,
 		     disabled = ?, updated_at = CURRENT_TIMESTAMP
 		 WHERE namespace = ? AND id = ? AND deleted = FALSE`,
 		disabled, disabled, namespace, id,
 	)
 	if err != nil {
-		return err
+		return memoryGenerationWriteError(err, namespace, id)
 	}
 	return ensureRowsAffected(res)
 }
