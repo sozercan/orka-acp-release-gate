@@ -229,6 +229,8 @@ const (
 //     an update that changes none keeps it.
 //   - UpdateMemoryIfCurrent replaces the same fields and returns the updated
 //     record only if the stored generation equals the supplied Generation.
+//     It takes the edit by value so the caller keeps the original generation
+//     for retries; the committed generation is returned, not written back.
 //     A stale generation returns ErrPreconditionFailed and changes nothing.
 //   - DeleteMemory keeps the record, marking it deleted and disabled.
 //     SetMemoryDisabled on a deleted memory returns ErrNotFound. Each adds one

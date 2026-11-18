@@ -9,6 +9,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -67,19 +68,21 @@ func TestMemoryEditOverlappingLifecycleChange(t *testing.T) {
 				internal := NewInternalHandlers(nil, nil, nil, nil, nil, InternalHandlersConfig{MemoryStore: interleaved})
 				app.Put("/api/v1/memories/:id", external.UpdateMemory)
 				app.Put("/internal/v1/memories/:namespace/:id", internal.UpdateMemory)
-				edit := func() *http.Response {
-					req := httptest.NewRequest(http.MethodPut, route.path, strings.NewReader(`{"content":"edited token=placeholder","generation":2}`))
+				edit := func(body string) *http.Response {
+					t.Helper()
+					req := httptest.NewRequest(http.MethodPut, route.path, strings.NewReader(body))
 					req.Header.Set("Content-Type", "application/json")
 					resp, err := app.Test(req)
 					require.NoError(t, err)
 					t.Cleanup(func() { _ = resp.Body.Close() })
 					return resp
 				}
-				require.Equal(t, http.StatusConflict, edit().StatusCode)
+				overlappingEdit := fmt.Sprintf(`{"content":"edited token=placeholder","generation":%d}`, memory.Generation+1)
+				require.Equal(t, http.StatusConflict, edit(overlappingEdit).StatusCode, "guessing the concurrent writer's generation must not bypass the server's check")
 				stored, err := backing.GetMemory(t.Context(), "default", "mem")
 				require.NoError(t, err)
 				require.Equal(t, "original", stored.Content)
-				require.Equal(t, uint64(2), stored.Generation)
+				require.Equal(t, memory.Generation+1, stored.Generation)
 				require.True(t, stored.Disabled)
 				require.Equal(t, change == "delete", stored.Deleted)
 				visible, err := backing.ListMemories(t.Context(), store.MemoryFilter{Namespace: "default"})
@@ -87,14 +90,14 @@ func TestMemoryEditOverlappingLifecycleChange(t *testing.T) {
 				require.Empty(t, visible)
 
 				if change == "disable" {
-					resp := edit()
+					resp := edit(`{"content":"edited token=placeholder"}`)
 					require.Equal(t, http.StatusOK, resp.StatusCode)
 					var updated store.Memory
 					require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
 					require.Equal(t, "edited token=[REDACTED]", updated.Content)
 					require.Equal(t, []string{"keep"}, updated.Tags)
 					require.True(t, updated.Disabled)
-					require.Equal(t, uint64(3), updated.Generation)
+					require.Equal(t, stored.Generation+1, updated.Generation)
 					stored, err = backing.GetMemory(t.Context(), "default", "mem")
 					require.NoError(t, err)
 					require.Equal(t, updated, *stored)

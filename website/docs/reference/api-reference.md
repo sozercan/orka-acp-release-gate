@@ -139,7 +139,7 @@ Memory endpoints manage namespace-scoped durable memories and reviewable memory 
 | `/api/v1/memories/:id/disable` | POST | Disable memory for normal recall |
 | `/api/v1/memories/:id/enable` | POST | Re-enable memory for normal recall |
 
-If a memory changes after the `PUT` handler reads it but before it saves the edit, the API returns `409 Conflict` without applying the edit. Read the current memory before retrying. A recall alone does not cause a conflict.
+Send only the fields you want to edit; `PUT` ignores `generation` in the request body. The server compares the generation it read at the start of the edit with the stored generation when it saves. If they differ, the edit is not applied and the API returns `409 Conflict`. Read the current memory and decide whether your edit still applies before retrying. This check does not detect changes made before the server's read. A recall alone does not change the generation.
 
 Common list query parameters: `namespace`, `query`/`q`, `sessionName`, `agentName`, `taskName`, `parentTask`, `source`, `tags`, `ids`, `includeDisabled`, `includeDeleted`, and `limit`.
 

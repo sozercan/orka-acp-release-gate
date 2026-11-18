@@ -169,8 +169,13 @@ func (s *Store) UpdateMemoryIfCurrent(ctx context.Context, memory store.Memory) 
 				return updated, uniqueConflict(err)
 			}
 		}
-		if _, err := s.GetMemory(ctx, memory.Namespace, memory.ID); err != nil {
+		var exists bool
+		if err := s.taskDataExecutor(ctx).QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM memories WHERE namespace = ? AND id = ?)`, memory.Namespace, memory.ID).Scan(&exists); err != nil {
 			return nil, err
+		}
+		if !exists {
+			return nil, store.ErrNotFound
 		}
 		return nil, store.PreconditionFailedErrorf("memory %q changed since it was read", memory.ID)
 	})
