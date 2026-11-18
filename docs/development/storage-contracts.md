@@ -473,6 +473,11 @@ write without one.
   typed value's floating-point numbers and integers up to 2^53, and where it
   rewrote a number it fails the digest check rather than matching another
   request.
+- **Empty delivery claims.** `ClaimNextGatewayDelivery` returns `ErrNotFound`
+  when nothing was claimable and nothing changed. If the claim only dead-lettered
+  exhausted deliveries or expired interim messages, it returns `(nil, nil)`:
+  the cleanup committed, but there is nothing to send. Replaying its envelope
+  returns the same empty result rather than claiming a newly available row.
 - **Receipts.** A receipt commits with its change. A replay returns the
   original outcome and changes nothing; a provider either keeps the typed
   result with the receipt, up to `MaxReceiptResultBytes` (1 MiB) in its own

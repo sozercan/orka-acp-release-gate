@@ -2347,6 +2347,26 @@ func TestReadyBindingWinsOverHigherPriorityUnreadyBinding(t *testing.T) {
 	}
 }
 
+func TestDeliverOnceSettlesLastExhaustedDeliveryWithoutSending(t *testing.T) {
+	service, db, adapter := newGatewayServiceFixture(t)
+	ctx := t.Context()
+	at := time.Now().UTC().Add(-time.Minute)
+	last, _, err := db.CreateGatewayDelivery(ctx, &store.GatewayDelivery{
+		ID: "last", IdempotencyID: "last", Namespace: "default", NamespaceUID: "namespace-uid",
+		GatewayUID: "gateway-uid", GatewayGeneration: 1, GatewayName: "chat", EventID: "event-last",
+		Kind: protocol.DeliveryKindFinal, AccountID: "acct", ContextID: "room", ReplyTarget: "room", Text: "last",
+		MaxAttempts: 1, NextAttemptAt: at, ExpiresAt: at.Add(time.Hour), CreatedAt: at, UpdatedAt: at,
+	})
+	require.NoError(t, err)
+	_, err = db.ClaimNextGatewayDelivery(ctx, last.Namespace, "crashed", at, time.Second)
+	require.NoError(t, err)
+	require.ErrorIs(t, service.DeliverOnce(ctx), store.ErrNotFound)
+	got, err := db.GetGatewayDelivery(ctx, last.Namespace, last.ID)
+	require.NoError(t, err)
+	require.Equal(t, store.GatewayDeliveryDeadLettered, got.State)
+	require.Empty(t, adapter.Deliveries())
+}
+
 func TestProcessDeliveryBatchHandlesIndependentSessionsConcurrently(t *testing.T) {
 	service, sqliteStore, adapter := newGatewayServiceFixture(t)
 	service.Config.BatchSize = 2

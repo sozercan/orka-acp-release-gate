@@ -1493,6 +1493,9 @@ func (s *Service) DeliverOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if delivery == nil {
+		return store.ErrNotFound
+	}
 	ctx = gatewayTraceContext(ctx, delivery.TraceParent, delivery.TraceState)
 	ctx, span := gatewayTracer.Start(ctx, "gateway.deliver")
 	defer span.End()
