@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { useTaskResult } from '@/hooks/use-tasks'
+import type { TaskIdentity } from '@/lib/task-identity'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -97,15 +98,14 @@ function StructuredResultView({ result }: { result: StructuredResult }) {
 }
 
 interface TaskResultViewerProps {
-  taskId: string
+  target: TaskIdentity
   /** A terminal task's result loads as soon as the tab opens. */
   taskPhase?: string
-  taskUid?: string
 }
 
-export function TaskResultViewer({ taskId, taskPhase, taskUid }: TaskResultViewerProps) {
+export function TaskResultViewer({ target, taskPhase }: TaskResultViewerProps) {
   const terminal = isTaskTerminal(taskPhase)
-  const { data, isLoading, isFetched, isFetching, error, refetch } = useTaskResult(taskId, terminal, taskUid)
+  const { data, isLoading, isFetched, isFetching, error, refetch } = useTaskResult(target, terminal)
 
   const resultText = data?.result
   const structured = useMemo(() => {

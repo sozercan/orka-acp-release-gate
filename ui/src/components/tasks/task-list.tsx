@@ -21,6 +21,7 @@ import { TaskStatusBadge } from './task-status-badge'
 import { useTaskListAll, useDeleteTask } from '@/hooks/use-tasks'
 import type { Task } from '@/schemas/task'
 import { taskTypeLabel } from '@/lib/task-status'
+import { matchesTaskIdentity, taskIdentity, type TaskIdentity } from '@/lib/task-identity'
 import { compareTasksNewestFirst, matchesTaskFilter } from '@/lib/task-filter'
 import { timeAgo } from '@/lib/time'
 import { actionErrorMessage } from './action-error'
@@ -46,7 +47,7 @@ export function TaskList() {
   const [shownCount, setShownCount] = useState(rowsPerReveal)
   // The task whose delete is awaiting confirmation. The dialog lives outside
   // the table so its clicks never bubble into a row's navigate handler.
-  const [pendingDelete, setPendingDelete] = useState<Task | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<TaskIdentity | null>(null)
   // isPending lands a render later, so a fast double click needs a
   // synchronous guard to send a single DELETE.
   const deletingRef = useRef(false)
@@ -61,14 +62,16 @@ export function TaskList() {
   const matching = useMemo(() => tasks.filter((task) => matchesTaskFilter(task, filter)), [tasks, filter])
   const visible = matching.slice(0, shownCount)
   const truncated = !error && Boolean(data?.truncated)
+  if (pendingDelete && !tasks.some((task) => matchesTaskIdentity(task.metadata, pendingDelete) && !isTaskDeleting(task))) {
+    setPendingDelete(null)
+  }
 
   async function confirmDelete() {
     if (!pendingDelete || deletingRef.current) return
     deletingRef.current = true
-    const name = pendingDelete.metadata.name
     try {
-      await deleteTask.mutateAsync(name)
-      toast.success(`Task ${name} deleted`)
+      await deleteTask.mutateAsync(pendingDelete)
+      toast.success(`Task ${pendingDelete.name} deleted`)
     } catch (err) {
       toast.error(actionErrorMessage('Failed to delete task', err))
     } finally {
@@ -198,11 +201,11 @@ export function TaskList() {
                       size="icon"
                       aria-label={`Delete task ${task.metadata.name}`}
                       title={isTaskDeleting(task) ? 'Deletion in progress' : 'Delete task'}
-                      disabled={isTaskDeleting(task)}
+                      disabled={isTaskDeleting(task) || !taskIdentity(task.metadata) || deleteTask.isPending}
                       onClick={(e) => {
                         e.preventDefault()
                         e.stopPropagation()
-                        setPendingDelete(task)
+                        setPendingDelete(taskIdentity(task.metadata))
                       }}
                     >
                       <Trash2 className="h-4 w-4 text-muted-foreground" />
@@ -226,7 +229,7 @@ export function TaskList() {
           <DialogHeader>
             <DialogTitle>Delete task?</DialogTitle>
             <DialogDescription>
-              <span className="font-mono">{pendingDelete?.metadata.name}</span> will be deleted. A running task is cancelled.
+              <span className="font-mono">{pendingDelete?.name}</span> will be deleted. A running task is cancelled.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

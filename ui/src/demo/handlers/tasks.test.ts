@@ -154,6 +154,25 @@ describe('demo task API', () => {
     expect((await call('/tasks/demo-created-task')).status).toBe(404)
   })
 
+  it('refuses stale deletes and result reads after same-name recreation', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() })
+    const name = 'recreated-task'
+    const create = (prompt: string) => json<{ metadata: { uid: string } }>('/tasks', post({ name, type: 'ai', prompt }))
+    const original = await create('original output')
+    const oldQuery = `uid=${original.metadata.uid}`
+    const path = `/tasks/${name}`
+    expect((await call(`${path}?${oldQuery}`, { method: 'DELETE' })).status).toBe(204)
+    const replacement = await create('replacement output')
+    expect(replacement.metadata.uid).not.toBe(original.metadata.uid)
+
+    advanceClock(3 * 60_000)
+    expect((await call(`${path}/result?${oldQuery}`)).status).toBe(404)
+    expect((await call(`${path}?${oldQuery}`, { method: 'DELETE' })).status).toBe(404)
+    const currentQuery = `uid=${replacement.metadata.uid}`
+    expect((await json<{ result: string }>(`${path}/result?${currentQuery}`)).result).toContain('replacement output')
+    expect((await call(`${path}?${currentQuery}`, { method: 'DELETE' })).status).toBe(204)
+  })
+
   it('creates tasks for other demo domains and lists their session', async () => {
     const name = createDemoTask({ agent: 'coordinator', prompt: 'Draft the Q4 roadmap update', session: 'chat-demo-session', createdBy: 'chat' })
     taskSchema.parse(await json(`/tasks/${name}`))

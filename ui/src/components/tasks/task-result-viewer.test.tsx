@@ -12,6 +12,8 @@ import { useUIStore } from '@/stores/ui'
 import { useAuthStore } from '@/stores/auth'
 import { TaskResultViewer } from './task-result-viewer'
 
+const target = { name: 'result-task', namespace: 'default', uid: 'u1' }
+
 describe('TaskResultViewer', () => {
   beforeEach(() => {
     useUIStore.setState({ sidebarCollapsed: false, theme: 'light', namespace: 'default' })
@@ -27,7 +29,7 @@ describe('TaskResultViewer', () => {
       }),
     )
     const user = userEvent.setup()
-    const { container } = render(<TaskResultViewer taskId="done-task" taskPhase="Succeeded" taskUid="u1" />)
+    const { container } = render(<TaskResultViewer target={target} taskPhase="Succeeded" />)
     expect(await screen.findByText('final answer 1')).toBeInTheDocument()
     expect(screen.queryByText('Load Result')).not.toBeInTheDocument()
     // Long results grow with the page and wrap instead of hiding behind a short cap.
@@ -43,7 +45,7 @@ describe('TaskResultViewer', () => {
     server.use(
       http.get('/api/v1/tasks/:id/result', () => HttpResponse.json({ message: 'not found' }, { status: 404 })),
     )
-    render(<TaskResultViewer taskId="failed-task" taskPhase="Failed" />)
+    render(<TaskResultViewer target={target} taskPhase="Failed" />)
     await waitFor(() => {
       expect(screen.getByTestId('result-error')).toHaveTextContent('No result was recorded for this task.')
     })
@@ -58,14 +60,14 @@ describe('TaskResultViewer', () => {
         return HttpResponse.json({ result: 'partial' })
       }),
     )
-    render(<TaskResultViewer taskId="running-task" taskPhase="Running" />)
+    render(<TaskResultViewer target={target} taskPhase="Running" />)
     expect(screen.getByText('Load Result')).toBeInTheDocument()
     await new Promise((r) => setTimeout(r, 50))
     expect(calls).toBe(0)
   })
 
   it('initial state shows "Load Result" button', () => {
-    render(<TaskResultViewer taskId="task-1" />)
+    render(<TaskResultViewer target={target} />)
     expect(screen.getByText('Load Result')).toBeInTheDocument()
   })
 
@@ -76,7 +78,7 @@ describe('TaskResultViewer', () => {
         HttpResponse.json({ result: 'Hello result output' }),
       ),
     )
-    render(<TaskResultViewer taskId="task-1" />)
+    render(<TaskResultViewer target={target} />)
     await user.click(screen.getByText('Load Result'))
     await waitFor(() => {
       expect(screen.getByText('Hello result output')).toBeInTheDocument()
@@ -90,7 +92,7 @@ describe('TaskResultViewer', () => {
         HttpResponse.json({}),
       ),
     )
-    render(<TaskResultViewer taskId="task-2" />)
+    render(<TaskResultViewer target={target} />)
     await user.click(screen.getByText('Load Result'))
     await waitFor(() => {
       expect(screen.getByText('No result available')).toBeInTheDocument()
@@ -105,7 +107,7 @@ describe('TaskResultViewer', () => {
       }),
     )
     const user = userEvent.setup()
-    render(<TaskResultViewer taskId="task-3" />)
+    render(<TaskResultViewer target={target} />)
     await user.click(screen.getByText('Load Result'))
     // While the request is in-flight, the loading skeleton should appear
     await waitFor(() => {
@@ -123,7 +125,7 @@ describe('TaskResultViewer', () => {
       }),
     )
     const user = userEvent.setup()
-    render(<TaskResultViewer taskId="task-held" />)
+    render(<TaskResultViewer target={target} />)
     await user.click(screen.getByText('Load Result'))
     await waitFor(() => {
       expect(screen.getByTestId('result-loading')).toBeInTheDocument()
@@ -142,7 +144,7 @@ describe('TaskResultViewer', () => {
       ),
     )
     const user = userEvent.setup()
-    render(<TaskResultViewer taskId="task-err" />)
+    render(<TaskResultViewer target={target} />)
     await user.click(screen.getByText('Load Result'))
     await waitFor(() => {
       expect(screen.getByTestId('result-error')).toHaveTextContent('result store failed')
@@ -166,7 +168,7 @@ describe('TaskResultViewer', () => {
       ),
     )
     const user = userEvent.setup()
-    render(<TaskResultViewer taskId="task-missing" />)
+    render(<TaskResultViewer target={target} />)
     await user.click(screen.getByText('Load Result'))
     await waitFor(() => {
       expect(screen.getByTestId('result-error')).toHaveTextContent('No result available for this task yet.')
@@ -179,7 +181,7 @@ describe('TaskResultViewer', () => {
       http.get('/api/v1/tasks/:id/result', () => HttpResponse.error()),
     )
     const user = userEvent.setup()
-    render(<TaskResultViewer taskId="task-net" />)
+    render(<TaskResultViewer target={target} />)
     await user.click(screen.getByText('Load Result'))
     await waitFor(() => {
       expect(screen.getByTestId('result-error')).toBeInTheDocument()
@@ -201,7 +203,7 @@ describe('TaskResultViewer', () => {
         HttpResponse.json({ result: structured }),
       ),
     )
-    render(<TaskResultViewer taskId="task-structured" />)
+    render(<TaskResultViewer target={target} />)
     await user.click(screen.getByText('Load Result'))
     await waitFor(() => {
       expect(screen.getByTestId('verdict-badge')).toHaveTextContent('APPROVE')
@@ -220,7 +222,7 @@ describe('TaskResultViewer', () => {
         HttpResponse.json({ result: structured }),
       ),
     )
-    render(<TaskResultViewer taskId="task-rc" />)
+    render(<TaskResultViewer target={target} />)
     await user.click(screen.getByText('Load Result'))
     await waitFor(() => {
       const badge = screen.getByTestId('verdict-badge')
@@ -236,7 +238,7 @@ describe('TaskResultViewer', () => {
         HttpResponse.json({ result: 'Just plain text output' }),
       ),
     )
-    render(<TaskResultViewer taskId="task-plain" />)
+    render(<TaskResultViewer target={target} />)
     await user.click(screen.getByText('Load Result'))
     await waitFor(() => {
       expect(screen.getByText('Just plain text output')).toBeInTheDocument()
@@ -252,7 +254,7 @@ describe('TaskResultViewer', () => {
         HttpResponse.json({ result: '{"foo": "bar"}' }),
       ),
     )
-    render(<TaskResultViewer taskId="task-json" />)
+    render(<TaskResultViewer target={target} />)
     await user.click(screen.getByText('Load Result'))
     await waitFor(() => {
       expect(screen.getByText('{"foo": "bar"}')).toBeInTheDocument()
@@ -278,7 +280,7 @@ describe('TaskResultViewer', () => {
     server.use(
       http.get('/api/v1/tasks/:id/result', () => HttpResponse.json({ result: resultText })),
     )
-    const { container } = render(<TaskResultViewer taskId="task-fallback" />)
+    const { container } = render(<TaskResultViewer target={target} />)
     await user.click(screen.getByText('Load Result'))
     await waitFor(() => {
       expect(container.querySelector('pre')?.textContent).toBe(resultText)
@@ -300,7 +302,7 @@ describe('TaskResultViewer', () => {
     server.use(
       http.get('/api/v1/tasks/:id/result', () => HttpResponse.json({ result })),
     )
-    render(<TaskResultViewer taskId="task-partial" />)
+    render(<TaskResultViewer target={target} />)
     await user.click(screen.getByText('Load Result'))
     await waitFor(() => {
       expect(screen.getByText(text)).toBeInTheDocument()
@@ -318,7 +320,7 @@ describe('TaskResultViewer', () => {
         HttpResponse.json({ result: structured }),
       ),
     )
-    render(<TaskResultViewer taskId="task-diff" />)
+    render(<TaskResultViewer target={target} />)
     await user.click(screen.getByText('Load Result'))
     await waitFor(() => {
       expect(screen.getByTestId('diff-viewer')).toBeInTheDocument()

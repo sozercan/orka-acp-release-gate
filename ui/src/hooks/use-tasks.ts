@@ -3,6 +3,7 @@ import { ApiError, api, isForbiddenError, isNotFoundError } from '@/lib/api-clie
 import { isPaginationProtocolError, pageParams, pollUnlessForbidden, retryUnlessForbidden, maxListWalkPages, walkAllPages, type ListResponse } from '@/lib/list-api'
 import { useAuthStore } from '@/stores/auth'
 import { useUIStore } from '@/stores/ui'
+import type { TaskIdentity } from '@/lib/task-identity'
 import type { ExecutionEvent, Task, TaskEventsResponse } from '@/schemas/task'
 import { useStickyQueryError } from './use-sticky-query-error'
 
@@ -58,13 +59,12 @@ export function useTask(id: string, refetchInterval: number | false = 5000) {
 
 // The result loads on its own once `enabled` (the Result tab passes "task is
 // terminal"); otherwise it waits for an explicit refetch.
-export function useTaskResult(id: string, enabled = false, taskUID?: string) {
-  const namespace = useUIStore((s) => s.namespace)
+export function useTaskResult({ name, namespace, uid }: TaskIdentity, enabled = false) {
   return useQuery({
-    queryKey: ['taskResult', id, namespace, taskUID ?? ''],
+    queryKey: ['taskResult', name, namespace, uid],
     queryFn: () =>
-      api.get<{ result: string }>(`/tasks/${id}/result`, { namespace }),
-    enabled: enabled && Boolean(id),
+      api.get<{ result: string }>(`/tasks/${name}/result`, { namespace, uid }),
+    enabled,
   })
 }
 
@@ -94,9 +94,8 @@ export function useCreateTask() {
 
 export function useDeleteTask() {
   const queryClient = useQueryClient()
-  const namespace = useUIStore((s) => s.namespace)
   return useMutation({
-    mutationFn: (id: string) => api.delete<void>(`/tasks/${id}`, { namespace }),
+    mutationFn: ({ name, namespace, uid }: TaskIdentity) => api.delete<void>(`/tasks/${name}`, { namespace, uid }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
     },
