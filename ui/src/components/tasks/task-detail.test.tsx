@@ -557,6 +557,33 @@ describe('TaskDetail', () => {
     await waitFor(() => expect(artifactRequests).toBe(2))
   })
 
+  it('drops the armed delete and old result when the loaded UID changes', async () => {
+    mockSearch.current = { tab: 'result' }
+    let uid = 'first-uid'
+    server.use(
+      http.get('/api/v1/tasks/rerun', () => HttpResponse.json({
+        metadata: { name: 'rerun', namespace: 'default', uid },
+        spec: { type: 'container' }, status: { phase: 'Succeeded' },
+      })),
+      http.get('/api/v1/tasks/rerun/result', ({ request }) => {
+        const params = new URL(request.url).searchParams
+        return HttpResponse.json({ result: `output for ${params.get('namespace')}/${params.get('uid')}` })
+      }),
+    )
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const user = userEvent.setup()
+    renderRaw(<QueryClientProvider client={client}><TaskDetail taskId="rerun" /></QueryClientProvider>)
+    expect(await screen.findByText('output for default/first-uid')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(screen.getByRole('button', { name: 'Confirm delete' })).toBeInTheDocument()
+
+    uid = 'second-uid'
+    await act(() => client.refetchQueries({ queryKey: ['task', 'rerun'] }))
+    expect(await screen.findByText('output for default/second-uid')).toBeInTheDocument()
+    expect(screen.queryByText('output for default/first-uid')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Confirm delete' })).not.toBeInTheDocument()
+  })
+
   it('keeps polling artifacts while the task is Finalizing', async () => {
     // Finalizing is when the run publishes its PR and artifacts.
     mockSearch.current = { tab: 'overview' }
@@ -598,26 +625,58 @@ describe('TaskDetail', () => {
     expect(screen.queryByText('Execution trace')).not.toBeInTheDocument()
   })
 
-  it('delete button removes task and navigates', async () => {
+  it('disarms delete on namespace change and does not rearm on return', async () => {
     const user = userEvent.setup()
+    const deletes: URL[] = []
     server.use(
-      http.get('/api/v1/tasks/:id', () =>
-        HttpResponse.json({
-          metadata: { name: 'del-task', namespace: 'default', uid: 'uid-del' },
-          spec: { type: 'container', image: 'alpine' },
+      http.get('/api/v1/tasks/del-task', ({ request }) => {
+        const namespace = new URL(request.url).searchParams.get('namespace')
+        return HttpResponse.json({
+          metadata: { name: 'del-task', namespace, uid: 'uid-del' },
+          spec: { type: 'container', image: `image-${namespace}` },
           status: { phase: 'Succeeded' },
-        }),
-      ),
+        })
+      }),
+      http.delete('/api/v1/tasks/del-task', ({ request }) => {
+        deletes.push(new URL(request.url))
+        return new HttpResponse(null, { status: 204 })
+      }),
     )
     render(<TaskDetail taskId="del-task" />)
-    await waitFor(() => {
-      expect(screen.getByText('del-task')).toBeInTheDocument()
-    })
+    await user.click(await screen.findByRole('button', { name: /^delete/i }))
+    expect(screen.getByRole('button', { name: /confirm delete/i })).toBeInTheDocument()
+    for (const namespace of ['other', 'default']) {
+      act(() => useUIStore.setState({ namespace }))
+      expect(await screen.findByText(`image-${namespace}`)).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /confirm delete/i })).not.toBeInTheDocument()
+    }
+    expect(deletes).toEqual([])
     await user.click(screen.getByRole('button', { name: /^delete/i }))
     await user.click(screen.getByRole('button', { name: /confirm delete/i }))
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith({ to: '/tasks' })
     })
+    expect(deletes.map((url) => Object.fromEntries(url.searchParams))).toEqual([{ namespace: 'default', uid: 'uid-del' }])
+  })
+
+  it.each(['namespace', 'uid'])('does not delete or read a result without metadata.%s', async (missing) => {
+    mockSearch.current = { tab: 'result' }
+    const resultRead = vi.fn()
+    server.use(
+      http.get('/api/v1/tasks/incomplete', () => HttpResponse.json({
+        metadata: { name: 'incomplete', namespace: 'default', uid: 'uid-task', [missing]: undefined },
+        spec: { type: 'container' }, status: { phase: 'Succeeded' },
+      })),
+      http.get('/api/v1/tasks/incomplete/result', () => {
+        resultRead()
+        return HttpResponse.json({ result: 'unfenced output' })
+      }),
+    )
+    render(<TaskDetail taskId="incomplete" />)
+    expect(await screen.findByText(/Cannot load the result without the task’s identity/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^delete$/i })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /load result|refresh/i })).not.toBeInTheDocument()
+    expect(resultRead).not.toHaveBeenCalled()
   })
 
   it('keeps the page and explains a failed delete instead of hanging on Confirm', async () => {

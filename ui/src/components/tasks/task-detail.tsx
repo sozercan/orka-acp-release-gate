@@ -33,6 +33,7 @@ import { useNavigate, useSearch } from '@tanstack/react-router'
 import type { ExecutionEvent, PlanState } from '@/schemas/task'
 import { timeAgo } from '@/lib/time'
 import { formatShellCommand } from '@/lib/task-command'
+import { matchesTaskIdentity, taskIdentity, type TaskIdentity } from '@/lib/task-identity'
 import { actionErrorMessage } from './action-error'
 import { isTaskCancellable, isTaskCancelling, isTaskDeleting, isWaitingForApproval, nextCancelTarget } from './task-state'
 import { TaskStateBadges } from './task-state-badges'
@@ -181,12 +182,14 @@ export function TaskDetail({ taskId }: { taskId: string }) {
   // Holds the namespace/uid/name identity the dialog was opened for, like the
   // armed delete, so a namespace switch or same-name recreation closes it.
   const [cancelFor, setCancelFor] = useState<string | null>(null)
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<TaskIdentity | null>(null)
   // Scope the armed delete to the loaded task's namespace+uid+name; a namespace
   // switch or same-name/new-uid recreation drops a stale confirm so it can't
   // delete a different task than the one armed.
-  const deleteIdentity = `${task?.metadata.namespace ?? ''}/${task?.metadata.uid ?? ''}/${taskId}`
-  const deleteArmed = confirmDelete === deleteIdentity
+  const cancelIdentity = `${task?.metadata.namespace ?? ''}/${task?.metadata.uid ?? ''}/${taskId}`
+  const target = task && taskIdentity(task.metadata)
+  const deleteArmed = confirmDelete !== null && !taskUnavailable && matchesTaskIdentity(task.metadata, confirmDelete) && !isTaskDeleting(task)
+  if (confirmDelete && !deleteArmed) setConfirmDelete(null)
   // isPending lands a render later; a double click on Confirm must send a
   // single DELETE.
   const deletingRef = useRef(false)
@@ -205,12 +208,12 @@ export function TaskDetail({ taskId }: { taskId: string }) {
     }
     wasDeleteArmedRef.current = deleteArmed
   }, [deleteArmed])
-  const confirmTaskDelete = async (name: string) => {
-    if (deletingRef.current) return
+  const confirmTaskDelete = async () => {
+    if (!deleteArmed || deletingRef.current) return
     deletingRef.current = true
     try {
-      await deleteTask.mutateAsync(name)
-      toast.success(`Task ${name} deleted`)
+      await deleteTask.mutateAsync(confirmDelete)
+      toast.success(`Task ${confirmDelete.name} deleted`)
       navigate({ to: '/tasks' })
     } catch (err) {
       // Disarm so the header is usable again; the toast carries the reason.
@@ -365,18 +368,18 @@ export function TaskDetail({ taskId }: { taskId: string }) {
               <CircleStop className="mr-2 h-4 w-4" /> Cancelling…
             </Button>
           ) : isTaskCancellable(task) && !deleteArmed ? (
-            <Button variant="outline" size="sm" onClick={() => setCancelFor(deleteIdentity)} title="Stop the task and keep its history">
+            <Button variant="outline" size="sm" onClick={() => setCancelFor(cancelIdentity)} title="Stop the task and keep its history">
               <CircleStop className="mr-2 h-4 w-4" /> Cancel task
             </Button>
           ) : null}
           <TaskCancelDialog
             // Remount per Task identity so a reason or error typed for a
             // replaced Task is not carried over to its successor.
-            key={deleteIdentity}
+            key={cancelIdentity}
             taskName={task.metadata.name}
             taskUID={task.metadata.uid}
-            open={cancelFor === deleteIdentity}
-            onOpenChange={(open) => setCancelFor((current) => nextCancelTarget(current, deleteIdentity, open))}
+            open={cancelFor === cancelIdentity}
+            onOpenChange={(open) => setCancelFor((current) => nextCancelTarget(current, cancelIdentity, open))}
           />
           {isTaskDeleting(task) ? (
             // The API accepted the delete; finalizers are still running.
@@ -398,7 +401,7 @@ export function TaskDetail({ taskId }: { taskId: string }) {
                 variant="destructive"
                 size="sm"
                 disabled={deleteTask.isPending}
-                onClick={() => confirmTaskDelete(task.metadata.name)}
+                onClick={confirmTaskDelete}
               >
                 {deleteTask.isPending ? 'Deleting…' : 'Confirm delete'}
               </Button>
@@ -411,7 +414,8 @@ export function TaskDetail({ taskId }: { taskId: string }) {
               ref={deleteButtonRef}
               variant="destructive"
               size="sm"
-              onClick={() => setConfirmDelete(deleteIdentity)}
+              disabled={!target || deleteTask.isPending}
+              onClick={() => setConfirmDelete(target ?? null)}
               title={isTaskTerminal(task.status?.phase) ? 'Delete task' : 'Delete (cancels a running task)'}
             >
               <Trash2 className="mr-2 h-4 w-4" /> Delete
@@ -639,7 +643,9 @@ export function TaskDetail({ taskId }: { taskId: string }) {
         </TabsContent>
 
         <TabsContent value="result" className="space-y-4">
-          <TaskResultViewer taskId={taskId} taskPhase={task.status?.phase} taskUid={task.metadata.uid} />
+          {target ? <TaskResultViewer target={target} taskPhase={task.status?.phase} /> : (
+            <p className="text-sm text-muted-foreground">Cannot load the result without the task’s identity.</p>
+          )}
           <TaskArtifactsPanel taskId={taskId} taskUid={task.metadata.uid} refetchInterval={resultArtifactRefetchInterval} />
         </TabsContent>
 

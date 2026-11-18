@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor } from '@/test/test-utils'
+import { act, render, screen, waitFor } from '@/test/test-utils'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { server } from '@/test/mocks/server'
@@ -96,13 +97,13 @@ describe('TaskList', () => {
     expect(link).toHaveAttribute('href', '/tasks/new')
   })
 
-  function serveDeletableTask() {
+  function serveDeletableTask(uid = 'uid-del', namespace = 'default') {
     server.use(
       http.get('/api/v1/tasks', () =>
         HttpResponse.json({
           items: [
             {
-              metadata: { name: 'del-task', namespace: 'default', uid: 'uid-del', creationTimestamp: new Date().toISOString() },
+              metadata: { name: 'del-task', namespace, uid, creationTimestamp: new Date().toISOString() },
               spec: { type: 'container' },
               status: { phase: 'Succeeded' },
             },
@@ -134,6 +135,33 @@ describe('TaskList', () => {
     expect(deletes).toEqual(['del-task'])
     expect(navigateMock).not.toHaveBeenCalled()
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it.each([
+    { namespace: 'default', uid: 'new-uid' },
+    { namespace: 'other', uid: 'uid-del' },
+  ])('requires fresh confirmation when a same-name row changes to $namespace/$uid', async ({ namespace, uid }) => {
+    const client = new QueryClient()
+    const user = userEvent.setup()
+    serveDeletableTask()
+    const deletes: URL[] = []
+    server.use(http.delete('/api/v1/tasks/del-task', ({ request }) => {
+      deletes.push(new URL(request.url))
+      return new HttpResponse(null, { status: 204 })
+    }))
+    render(<QueryClientProvider client={client}><TaskList /></QueryClientProvider>)
+    await user.click(await screen.findByRole('button', { name: 'Delete task del-task' }))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    serveDeletableTask(uid, namespace)
+    if (namespace === 'default') await act(() => client.refetchQueries({ queryKey: ['tasks'] }))
+    else act(() => useUIStore.setState({ namespace }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(deletes).toEqual([])
+    await user.click(await screen.findByRole('button', { name: 'Delete task del-task' }))
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(deletes.map((url) => Object.fromEntries(url.searchParams))).toEqual([
+      { namespace, uid },
+    ]))
   })
 
   it('cancelling the confirmation sends no delete', async () => {

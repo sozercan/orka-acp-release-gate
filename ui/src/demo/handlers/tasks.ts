@@ -124,10 +124,9 @@ function tokenTotals(beats: Beat[]) {
   return { input, output }
 }
 
-function baseRecord(fields: Omit<TaskRecord, 'uid' | 'cursor' | 'started' | 'finished' | 'events' | 'logs' | 'approvals' | 'artifacts' | 'tokenFactor' | 'labels' | 'annotations'> & Partial<Pick<TaskRecord, 'tokenFactor' | 'labels' | 'annotations'>>): TaskRecord {
+function baseRecord(fields: Omit<TaskRecord, 'cursor' | 'started' | 'finished' | 'events' | 'logs' | 'approvals' | 'artifacts' | 'tokenFactor' | 'labels' | 'annotations'> & Partial<Pick<TaskRecord, 'tokenFactor' | 'labels' | 'annotations'>>): TaskRecord {
   const agentName = fields.agentName ?? (fields.agent ? AGENTS[fields.agent].name : undefined)
   return {
-    uid: taskUID(fields.name, fields.created),
     cursor: 0,
     started: false,
     finished: false,
@@ -154,6 +153,7 @@ function seedRecord(seed: DemoTaskSeed): TaskRecord {
   const session = seed.session ?? EXTRA_SESSION_LINKS[seed.name]
   const common = {
     name: seed.name,
+    uid: taskUID(seed.name, created),
     type: seed.type,
     agent: seed.agent,
     repo: seed.repo,
@@ -490,6 +490,8 @@ interface LiveTaskInput {
   specExtras?: Partial<Task['spec']>
 }
 
+let liveTaskSequence = 0
+
 function addLiveTask(input: LiveTaskInput): TaskRecord {
   const created = input.created ?? Date.now()
   const start = created + 4_000
@@ -502,6 +504,7 @@ function addLiveTask(input: LiveTaskInput): TaskRecord {
   const timeline = sequence(story.beats, start)
   const record = baseRecord({
     name: input.name,
+    uid: uid(`live-task:${input.name}:${created}:${++liveTaskSequence}`),
     type: input.type,
     agent: input.agent,
     agentName: input.agentName,
@@ -1052,6 +1055,11 @@ function lookup(request: Request, name: string): TaskRecord | undefined {
 
 const nameParam = (params: Record<string, string | readonly string[] | undefined>, key = 'id') => String(params[key] ?? '')
 
+function matchesExpectedUID(request: Request, rec: TaskRecord): boolean {
+  const expected = query(request, 'uid')
+  return !expected || rec.uid === expected
+}
+
 const forbiddenNamespace = () => apiError(403, `the demo only accepts writes in namespace "${DEMO_NAMESPACE}"`)
 
 interface CreateTaskBody {
@@ -1175,7 +1183,9 @@ export const taskHandlers: RequestHandler[] = [
   http.delete(api('/tasks/:id'), ({ request, params }) => {
     if (!inDemoNamespace(request)) return forbiddenNamespace()
     const name = nameParam(params)
-    if (!tasks.delete(name)) return notFound(`tasks.orka.ai "${name}"`)
+    const rec = tasks.get(name)
+    if (!rec || !matchesExpectedUID(request, rec)) return notFound(`tasks.orka.ai "${name}"`)
+    tasks.delete(name)
     return noContent()
   }),
 
@@ -1204,7 +1214,7 @@ export const taskHandlers: RequestHandler[] = [
 
   http.get(api('/tasks/:id/result'), ({ request, params }) => {
     const rec = lookup(request, nameParam(params))
-    if (!rec) return notFound(`tasks.orka.ai "${nameParam(params)}"`)
+    if (!rec || !matchesExpectedUID(request, rec)) return notFound(`tasks.orka.ai "${nameParam(params)}"`)
     if (!rec.finished || !rec.outcome.result) return notFound('result')
     return HttpResponse.json({ result: rec.outcome.result })
   }),

@@ -150,22 +150,27 @@ describe('useTask on 404', () => {
 })
 
 describe('useTaskResult', () => {
-  it('starts disabled and returns result on refetch', async () => {
-    const { result } = renderHook(() => useTaskResult('my-task'), { wrapper: createWrapper() })
-    // Should not fetch automatically
-    expect(result.current.isFetching).toBe(false)
-    expect(result.current.data).toBeUndefined()
+  const target = { name: 'my-task', namespace: 'task-ns', uid: 'uid-first' }
 
-    // Trigger manual refetch
-    await act(async () => {
-      await result.current.refetch()
+  it('keeps manual result requests and cached output scoped to each observed identity', async () => {
+    server.use(http.get('/api/v1/tasks/my-task/result', ({ request }) => {
+      const params = new URL(request.url).searchParams
+      return HttpResponse.json({ result: `${params.get('namespace')}/${params.get('uid')}` })
+    }))
+    const { result, rerender } = renderHook((identity) => useTaskResult(identity), {
+      wrapper: createWrapper(), initialProps: target,
     })
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(result.current.data).toEqual({ result: 'task output' })
+    for (const identity of [target, { ...target, uid: 'uid-second' }, { ...target, uid: 'uid-second', namespace: 'other' }]) {
+      rerender(identity)
+      expect(result.current.isFetching).toBe(false)
+      expect(result.current.data).toBeUndefined()
+      await act(async () => { await result.current.refetch() })
+      await waitFor(() => expect(result.current.data?.result).toBe(`${identity.namespace}/${identity.uid}`))
+    }
   })
 
   it('fetches on its own once enabled', async () => {
-    const { result } = renderHook(() => useTaskResult('my-task', true), { wrapper: createWrapper() })
+    const { result } = renderHook(() => useTaskResult(target, true), { wrapper: createWrapper() })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
     expect(result.current.data).toEqual({ result: 'task output' })
   })
@@ -344,11 +349,18 @@ describe('useCreateTask', () => {
 })
 
 describe('useDeleteTask', () => {
-  it('deletes a task via mutation', async () => {
+  it('deletes the confirmed identity, independent of the selected namespace', async () => {
+    const target = { name: 'task-to-delete', namespace: 'confirmed-ns', uid: 'confirmed-uid' }
+    const deletes: URL[] = []
+    server.use(http.delete('/api/v1/tasks/task-to-delete', ({ request }) => {
+      deletes.push(new URL(request.url))
+      return new HttpResponse(null, { status: 204 })
+    }))
     const { result } = renderHook(() => useDeleteTask(), { wrapper: createWrapper() })
     act(() => {
-      result.current.mutate('task-to-delete')
+      result.current.mutate(target)
     })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(deletes.map((url) => Object.fromEntries(url.searchParams))).toEqual([{ namespace: target.namespace, uid: target.uid }])
   })
 })
