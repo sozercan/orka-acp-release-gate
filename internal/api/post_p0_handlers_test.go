@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -194,6 +195,27 @@ func TestStreamSessionEventsCompletesWhenSessionDeleted(t *testing.T) {
 	body := doStreamRequest(t, app, "/api/v1/sessions/session-delete/stream?namespace=default")
 	if !strings.Contains(body, "event: stream_complete") || !strings.Contains(body, "SessionDeleted") {
 		t.Fatalf("session stream body = %q, want SessionDeleted completion", body)
+	}
+}
+
+func TestSessionStreamPollDoesNotLoadTranscript(t *testing.T) {
+	handlers, _, sessions := setupTestHandlersWithSessionManager()
+	ctx := t.Context()
+	if err := sessions.CreateSession(ctx, &store.SessionRecord{Namespace: "default", Name: "streamed"}); err != nil {
+		t.Fatal(err)
+	}
+	recording := &metadataOnlySessionStore{SessionStore: sessions, typeReader: sessions}
+	handlers.sessionStore = recording
+	var frames bytes.Buffer
+	writer := bufio.NewWriter(&frames)
+	if !handlers.writeSessionDeletedStreamComplete(ctx, writer, "default", "streamed", 7) {
+		t.Fatal("poll ended a live session stream")
+	}
+	if handlers.writeSessionDeletedStreamComplete(ctx, writer, "default", "missing", 7) || !strings.Contains(frames.String(), "SessionDeleted") {
+		t.Fatalf("missing session did not complete the stream: %q", frames.String())
+	}
+	if recording.getCalls != 0 {
+		t.Fatalf("poll loaded %d full sessions, want metadata reads only", recording.getCalls)
 	}
 }
 
