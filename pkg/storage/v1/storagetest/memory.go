@@ -2,6 +2,7 @@ package storagetest
 
 import (
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -33,6 +34,33 @@ func proposalIDs(proposals []storagev1.MemoryProposal) []string {
 
 func runMemories(t *testing.T, newProvider StateFactory) {
 	at := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
+
+	t.Run("conditional edits require the generation read", func(t *testing.T) {
+		p, ctx := newProvider(t), t.Context()
+		memory := storagev1.Memory{Namespace: memoryTenant, ID: "mem-edit", Content: "original"}
+		require.NoError(t, p.CreateMemory(ctx, &memory))
+		require.NoError(t, p.RecordMemoryRecall(ctx, storagev1.MemoryRecall{
+			Namespace: memoryTenant, IDs: []string{memory.ID}, RecalledAt: at,
+		}))
+		memory.Content = "winner"
+		updated, err := p.UpdateMemoryIfCurrent(ctx, memory)
+		require.NoError(t, err)
+		require.Equal(t, memory.Generation+1, updated.Generation)
+		require.Equal(t, memory.Content, updated.Content)
+		require.Equal(t, 1, updated.RecalledCount)
+		memory.Content = "stale"
+		_, err = p.UpdateMemoryIfCurrent(ctx, memory)
+		require.ErrorIs(t, err, storagev1.ErrPreconditionFailed)
+		memory.Generation = math.MaxUint64
+		_, err = p.UpdateMemoryIfCurrent(ctx, memory)
+		require.ErrorIs(t, err, storagev1.ErrPreconditionFailed)
+		stored, err := p.GetMemory(ctx, memory.Namespace, memory.ID)
+		require.NoError(t, err)
+		require.Equal(t, updated, stored)
+		memory.Namespace = memoryOtherTenant
+		_, err = p.UpdateMemoryIfCurrent(ctx, memory)
+		require.ErrorIs(t, err, storagev1.ErrNotFound)
+	})
 
 	t.Run("memories are namespaced and listed newest first", func(t *testing.T) {
 		p, ctx := newProvider(t), t.Context()

@@ -318,6 +318,13 @@ the observable parts.
   controller releases the run of a Task that ended, which abandons an
   unfinished run and clears its transcripts, and, once the Task is
   deleted, clears its report and removes the runs no cursor needs.
+  Revision 12 requires `state.v1` providers to implement `UpdateMemoryIfCurrent`.
+  It compares the generation and returns the updated record in one atomic write;
+  a mismatch returns `ErrPreconditionFailed` without changing the record. API
+  edits use this method, never an unconditional fallback. `UpdateMemory` keeps
+  its existing replacement semantics. SQLite accepts a no-op edit at its signed
+  64-bit generation limit, but a write that would advance past it returns
+  `ErrConflict` without changing the memory. No SQLite schema migration is needed.
   The revision Orka requires for each part belongs to Orka, not to the
   contract.
   Orka never interprets a provider's `SchemaVersion` beyond equality: a

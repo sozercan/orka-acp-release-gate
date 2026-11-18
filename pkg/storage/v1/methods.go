@@ -386,6 +386,7 @@ var methodCatalog = map[string]MethodInfo{
 	"UpdateGitHubMutationRecord":               stateWrite(""),
 	"UpdateImplementationJob":                  stateWrite(""),
 	"UpdateMemory":                             stateWrite(""),
+	"UpdateMemoryIfCurrent":                    stateWrite(""),
 	"UpdateMonitorRun":                         stateWrite(""),
 	"UpdatePatchProposal":                      stateWrite(""),
 	"UpdateRepairJob":                          stateWrite(""),

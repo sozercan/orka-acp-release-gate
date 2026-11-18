@@ -268,6 +268,15 @@ func (c *Client) UpdateMemory(ctx context.Context, memory *store.Memory) error {
 	return c.StateProvider.UpdateMemory(ctx, memory)
 }
 
+func (c *Client) UpdateMemoryIfCurrent(ctx context.Context, memory store.Memory) (*store.Memory, error) {
+	content, err := protectText(ctx, "UpdateMemoryIfCurrent", "the memory's content", memory.Content)
+	if err != nil {
+		return nil, err
+	}
+	memory.Content = content
+	return c.StateProvider.UpdateMemoryIfCurrent(ctx, memory)
+}
+
 // CreateMemoryProposal redacts every free-text proposal field before storing
 // the proposal, and gives a proposal without an ID or times one.
 func (c *Client) CreateMemoryProposal(ctx context.Context, proposal *store.MemoryProposal) error {

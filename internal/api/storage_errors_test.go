@@ -110,3 +110,10 @@ func TestMemoryStoreErrorAnswersServiceUnavailableWhileStorageIsNotReady(t *test
 	require.True(t, ok)
 	require.Equal(t, fiber.StatusServiceUnavailable, fiberErr.Code)
 }
+
+func TestMemoryStoreErrorMapsPreconditionFailedToConflict(t *testing.T) {
+	err := memoryStoreError("update memory", "memory", fmt.Errorf("update: %w", store.ErrPreconditionFailed))
+	fiberErr, ok := errors.AsType[*fiber.Error](err)
+	require.True(t, ok)
+	require.Equal(t, fiber.StatusConflict, fiberErr.Code)
+}

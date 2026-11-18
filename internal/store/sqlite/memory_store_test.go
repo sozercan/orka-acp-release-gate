@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,10 +15,62 @@ import (
 	"github.com/orka-agents/orka/internal/storageclient"
 	"github.com/orka-agents/orka/internal/storageclient/storageclienttest"
 	"github.com/orka-agents/orka/internal/store"
+	"github.com/stretchr/testify/require"
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const memoryTestTaskA = "task-a"
+
+func TestConditionalMemoryEditAtSQLiteIntegerLimit(t *testing.T) {
+	backend := setupTestStore(t)
+	ctx := t.Context()
+	memory := store.Memory{Namespace: "ns-mem", Content: "unchanged"}
+	require.NoError(t, backend.CreateMemory(ctx, &memory))
+	_, err := backend.db.ExecContext(ctx, `UPDATE memories SET generation = ? WHERE namespace = ? AND id = ?`, int64(math.MaxInt64-1), memory.Namespace, memory.ID)
+	require.NoError(t, err)
+	memory.Generation = math.MaxInt64 - 1
+	memory.Content = "last change"
+	updated, err := backend.UpdateMemoryIfCurrent(ctx, memory)
+	require.NoError(t, err)
+	require.Equal(t, uint64(math.MaxInt64), updated.Generation)
+
+	for _, generation := range []uint64{math.MaxInt64 - 1, math.MaxInt64 + 1} {
+		memory.Generation = generation
+		_, err := backend.UpdateMemoryIfCurrent(ctx, memory)
+		require.ErrorIs(t, err, store.ErrPreconditionFailed, "generation %d", generation)
+		require.ErrorContains(t, err, memory.Namespace)
+		require.ErrorContains(t, err, memory.ID)
+		require.ErrorContains(t, err, fmt.Sprint(generation))
+		if generation > math.MaxInt64 {
+			require.ErrorContains(t, err, "exceeds SQLite's signed integer limit")
+		}
+	}
+	memory.Generation = math.MaxInt64
+	updated, err = backend.UpdateMemoryIfCurrent(ctx, memory)
+	require.NoError(t, err)
+	require.Equal(t, memory.Generation, updated.Generation)
+
+	assertExhausted := func(err error) {
+		t.Helper()
+		require.ErrorIs(t, err, store.ErrConflict)
+		require.NotErrorIs(t, err, store.ErrPreconditionFailed)
+		stored, err := backend.GetMemory(ctx, memory.Namespace, memory.ID)
+		require.NoError(t, err)
+		require.Equal(t, updated, stored)
+	}
+	memory.Content = "must not be stored"
+	_, err = backend.UpdateMemoryIfCurrent(ctx, memory)
+	assertExhausted(err)
+	assertExhausted(backend.UpdateMemory(ctx, &memory))
+	assertExhausted(backend.SetMemoryDisabled(ctx, memory.Namespace, memory.ID, true))
+	assertExhausted(backend.DeleteMemory(ctx, memory.Namespace, memory.ID))
+	proposal := &store.MemoryProposal{Namespace: memory.Namespace, Targets: []store.MemoryProposalTarget{{MemoryID: memory.ID, Generation: memory.Generation}}}
+	for _, replacement := range []string{"", "replacement"} {
+		assertExhausted(backend.inWriteTransaction(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			return retireConsolidationTargets(ctx, tx, proposal, replacement, time.Now())
+		}))
+	}
+}
 
 func TestMemoryStore(t *testing.T) {
 	s := setupTestStore(t)

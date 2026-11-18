@@ -323,12 +323,9 @@ func updateNamespaceMemory(c fiber.Ctx, memoryStore store.MemoryStore, namespace
 	if strings.TrimSpace(memory.Content) == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "content is required")
 	}
-	if err := memoryStore.UpdateMemory(c.Context(), memory); err != nil {
-		return memoryStoreError("update memory", "memory", err)
-	}
-	updated, err := memoryStore.GetMemory(c.Context(), namespace, c.Params("id"))
+	updated, err := memoryStore.UpdateMemoryIfCurrent(c.Context(), *memory)
 	if err != nil {
-		return memoryStoreError("get memory", "memory", err)
+		return memoryStoreError("update memory", "memory", err)
 	}
 	return c.JSON(updated)
 }
@@ -660,7 +657,7 @@ func memoryStoreError(action, resource string, err error) error {
 	if errors.Is(err, store.ErrNotFound) {
 		return fiber.NewError(fiber.StatusNotFound, fmt.Sprintf("%s not found", resource))
 	}
-	if errors.Is(err, store.ErrConflict) {
+	if errors.Is(err, store.ErrPreconditionFailed) || errors.Is(err, store.ErrConflict) {
 		return fiber.NewError(fiber.StatusConflict, err.Error())
 	}
 	if isStoreValidationError(err) {
