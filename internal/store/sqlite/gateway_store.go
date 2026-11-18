@@ -1381,24 +1381,26 @@ func (s *Store) claimNextGatewayDeliveryWrite(ctx context.Context, namespace, ow
 		return nil, err
 	}
 	defer tx.Rollback() //nolint:errcheck
-	if _, err := tx.ExecContext(ctx, `UPDATE gateway_deliveries SET state = ?, last_error = ?,
+	exhausted, err := tx.ExecContext(ctx, `UPDATE gateway_deliveries SET state = ?, last_error = ?,
 		claim_owner = '', claim_until = NULL, updated_at = ?
 		WHERE (? = '' OR namespace = ?) AND attempt_count >= max_attempts AND (state IN (?, ?) OR
 		  (state = ? AND (claim_until IS NULL OR claim_until <= ?)))`,
 		store.GatewayDeliveryDeadLettered, "delivery attempts exhausted", now, namespace, namespace,
 		store.GatewayDeliveryPending, store.GatewayDeliveryRetryScheduled, store.GatewayDeliverySending, now,
-	); err != nil {
+	)
+	if err != nil {
 		return nil, err
 	}
 	// An expired interim is abandoned before evaluating FIFO, without waiting
 	// for maintenance. An active send lease blocks abandonment; after lease
 	// expiry, the send outcome can still be unknown.
-	if _, err := tx.ExecContext(ctx, `UPDATE gateway_deliveries SET state = ?, last_error = 'delivery expired',
+	expired, err := tx.ExecContext(ctx, `UPDATE gateway_deliveries SET state = ?, last_error = 'delivery expired',
 		claim_owner = '', claim_until = NULL, updated_at = ?
 		WHERE (? = '' OR namespace = ?) AND kind = ? AND expires_at <= ? AND (state IN (?, ?) OR
 		  (state = ? AND (claim_until IS NULL OR claim_until <= ?)))`,
 		store.GatewayDeliveryExpired, now, namespace, namespace, gatewayDeliveryKindMessage, now,
-		store.GatewayDeliveryPending, store.GatewayDeliveryRetryScheduled, store.GatewayDeliverySending, now); err != nil {
+		store.GatewayDeliveryPending, store.GatewayDeliveryRetryScheduled, store.GatewayDeliverySending, now)
+	if err != nil {
 		return nil, err
 	}
 	row := tx.QueryRowContext(ctx, `SELECT `+prefixedColumns("delivery", gatewayDeliveryColumns)+` FROM gateway_deliveries delivery
@@ -1437,6 +1439,15 @@ func (s *Store) claimNextGatewayDeliveryWrite(ctx context.Context, namespace, ow
 	)
 	delivery, err := scanGatewayDelivery(row)
 	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, store.ErrNotFound) {
+		for _, change := range []sql.Result{exhausted, expired} {
+			count, err := change.RowsAffected()
+			if err != nil {
+				return nil, err
+			}
+			if count > 0 {
+				return nil, tx.Commit()
+			}
+		}
 		return nil, store.ErrNotFound
 	}
 	if err != nil {

@@ -494,6 +494,45 @@ func TestGatewayMessageExpiredPredecessorIsAbandoned(t *testing.T) {
 	}
 }
 
+func TestGatewayClaimCommitsTerminalTransitionWithoutSuccessor(t *testing.T) {
+	for _, want := range []store.GatewayDeliveryState{store.GatewayDeliveryExpired, store.GatewayDeliveryDeadLettered} {
+		t.Run(string(want), func(t *testing.T) {
+			s := setupTestStore(t)
+			ctx := t.Context()
+			now := time.Now().UTC().Truncate(time.Second)
+			dataset := advanceTestEpoch(t, s, testWriteFence)
+			event := admitMessageTask(t, s, now)
+			request := messageEnqueue(event, now, "last")
+			request.MaxAttempts = 1
+			request.ExpiresAt = now.Add(time.Minute)
+			last := enqueueMessage(t, s, request)
+			if want == store.GatewayDeliveryDeadLettered {
+				claimMessageDelivery(t, s, now, last.ID)
+			}
+			at := now.Add(time.Minute)
+			claimCtx, _ := testEnvelope(t, ctx, dataset, "ClaimNextGatewayDelivery", now, event.Namespace, "sender", at, time.Minute)
+			claim := func() {
+				t.Helper()
+				got, err := s.ClaimNextGatewayDelivery(claimCtx, event.Namespace, "sender", at, time.Minute)
+				if got != nil || err != nil {
+					t.Fatalf("maintenance-only claim = (%+v, %v), want empty success", got, err)
+				}
+			}
+			claim()
+			stored, err := s.GetGatewayDelivery(ctx, event.Namespace, last.ID)
+			if err != nil || stored.State != want || stored.ClaimOwner != "" || stored.ClaimUntil != nil {
+				t.Fatalf("last delivery = (%+v, %v), want %s without a lease", stored, err, want)
+			}
+			if _, err := s.ClaimNextGatewayDelivery(ctx, event.Namespace, "sender", at, time.Minute); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("idle claim = %v, want ErrNotFound", err)
+			}
+			next := enqueueMessage(t, s, messageEnqueue(event, at, "next"))
+			claim()
+			claimMessageDelivery(t, s, at, next.ID)
+		})
+	}
+}
+
 func TestGatewayMessageRetentionPreservesLaterStartedEvidence(t *testing.T) {
 	s := setupTestStore(t)
 	ctx := context.Background()
